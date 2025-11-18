@@ -2,95 +2,135 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import matplotlib.pyplot as plt
-from io import BytesIO
 
 st.set_page_config(page_title="Portfolio Auto Analyzer", layout="wide")
 
-# ------------------------------------------------------
-# PDF PARSER (FULLY UPDATED FOR SLA FINSERV / MINT PDFs)
-# ------------------------------------------------------
-def extract_mf_table(pdf_file):
+# ----------------- Helpers -----------------
+def clean_df(raw_table):
+    df = pd.DataFrame(raw_table)
+    df.replace("", None, inplace=True)
+    df.dropna(how="all", axis=0, inplace=True)
+    df.dropna(how="all", axis=1, inplace=True)
+    if df.empty or df.shape[0] < 2:
+        return None
+    header = df.iloc[0]
+    df = df[1:].copy()
+    df.columns = header
+    df.columns = (
+        df.columns.astype(str)
+        .str.strip()
+        .str.replace("\n", " ")
+        .str.replace("  ", " ")
+    )
+    return df
+
+
+def num(series):
+    try:
+        return (
+            series.astype(str)
+            .str.replace(",", "")
+            .str.replace("%", "")
+            .str.strip()
+            .replace("", "0")
+            .astype(float)
+        )
+    except Exception:
+        return series
+
+
+# ----------------- PDF Parsing -----------------
+def parse_pdf_sections(pdf_file):
+    """
+    Returns a dict:
+    {
+      'applicant': df,
+      'fund': df,
+      'scheme': df,
+      'subcat': df,
+      'sip': df
+    }
+    """
+    sections = {
+        "applicant": None,
+        "fund": None,
+        "scheme": None,
+        "subcat": None,
+        "sip": None,
+    }
+
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             tables = page.extract_tables()
-
-            for table in tables:
-                df = pd.DataFrame(table)
-
-                # Clean raw data
-                df.replace("", None, inplace=True)
-                df.dropna(how="all", axis=0, inplace=True)
-                df.dropna(how="all", axis=1, inplace=True)
-
-                # Skip tiny tables
-                if df.shape[1] < 3:
+            for t in tables:
+                df = clean_df(t)
+                if df is None:
                     continue
 
-                # Detect MF table using headers
-                header_text = " ".join(df.iloc[0].astype(str).tolist()).lower()
+                headers_lower = " ".join(df.columns.astype(str).str.lower().tolist())
 
+                # Applicant summary: Applicant, Purchase Value, Current Value, CAGR
                 if (
-                    "scheme" in header_text
-                    or "fund" in header_text
-                    or "purchase value" in header_text
-                    or "current value" in header_text
-                    or "allocation" in header_text
+                    "applicant" in headers_lower
+                    and "purchase value" in headers_lower
+                    and "current value" in headers_lower
+                    and sections["applicant"] is None
                 ):
-                    # First row = header
-                    df.columns = df.iloc[0]
-                    df = df[1:]
+                    sections["applicant"] = df.copy()
+                    continue
 
-                    # Clean column names
-                    df.columns = (
-                        df.columns.str.strip()
-                        .str.replace("\n", " ")
-                        .str.replace("  ", " ")
-                    )
+                # Fund-wise allocation
+                if (
+                    "fund" in headers_lower
+                    and "allocation" in headers_lower
+                    and "purchase value" in headers_lower
+                    and sections["fund"] is None
+                ):
+                    sections["fund"] = df.copy()
+                    continue
 
-                    # Select relevant columns
-                    keep = [c for c in df.columns if any(
-                        k in str(c).lower() for k in [
-                            "scheme", "fund", "sub", "category",
-                            "purchase", "current", "allocation", "%"
-                        ])]
+                # Scheme-wise allocation
+                if (
+                    "scheme" in headers_lower
+                    and "allocation" in headers_lower
+                    and "purchase value" in headers_lower
+                    and sections["scheme"] is None
+                ):
+                    sections["scheme"] = df.copy()
+                    continue
 
-                    df = df[keep]
+                # Sub category allocation
+                if (
+                    "sub category" in headers_lower
+                    and "allocation" in headers_lower
+                    and sections["subcat"] is None
+                ):
+                    sections["subcat"] = df.copy()
+                    continue
 
-                    # Drop empty rows
-                    df.dropna(how="all", axis=0, inplace=True)
+                # SIP Summary
+                if (
+                    "sip summary" in headers_lower
+                    or ("folio" in headers_lower and "scheme" in headers_lower)
+                ) and sections["sip"] is None:
+                    sections["sip"] = df.copy()
+                    continue
 
-                    # Try converting numbers
-                    for col in df.columns:
-                        try:
-                            df[col] = (
-                                df[col].astype(str)
-                                .str.replace(",", "")
-                                .str.replace("%", "")
-                                .astype(float)
-                            )
-                        except:
-                            pass
+    return sections
 
-                    return df
 
-    return None
-
-# -----------------------
-# CATEGORY CLASSIFICATION
-# -----------------------
-def classify(row):
-    sub = str(row).lower()
-    if "liquid" in sub:
+# ----------------- Allocation logic -----------------
+def classify_subcat(subcat):
+    s = str(subcat).lower()
+    if "liquid" in s:
         return "Liquid"
-    if "gilt" in sub or "debt" in sub:
+    if "gilt" in s or "debt" in s:
         return "Debt"
-    if "equity" in sub or "mid" in sub or "small" in sub or "large" in sub or "flexi" in sub:
+    if "equity" in s or "mid" in s or "small" in s or "flexi" in s or "large" in s:
         return "Equity"
     return "Other"
 
-# -------------------------------
-# TARGET ALLOCATION (3 MODELS)
-# -------------------------------
+
 def get_target_allocation(model):
     if model == "Conservative":
         return {"Equity": 30, "Debt": 40, "Liquid": 30}
@@ -99,98 +139,237 @@ def get_target_allocation(model):
     if model == "Aggressive":
         return {"Equity": 60, "Debt": 20, "Liquid": 20}
 
-# -------------------------------
-# AMC EXPOSURE (20% limit)
-# -------------------------------
-def amc_exposure_alerts(df):
+
+def compute_current_allocation(subcat_df):
+    if subcat_df is None:
+        return None
+    df = subcat_df.copy()
+    if "Allocation (%)" in df.columns:
+        df["Allocation (%)"] = num(df["Allocation (%)"])
+    df["Bucket"] = df["Sub Category"].apply(classify_subcat)
+    alloc = df.groupby("Bucket")["Allocation (%)"].sum().to_dict()
+    for k in ["Equity", "Debt", "Liquid"]:
+        alloc.setdefault(k, 0.0)
+    return alloc
+
+
+def amc_exposure(fund_df):
     alerts = []
-    if "Fund" in df.columns:
-        amcs = df.groupby("Fund")["Allocation (%)"].sum()
-        for amc, pct in amcs.items():
+    if fund_df is None:
+        return alerts
+    df = fund_df.copy()
+    if "Allocation (%)" in df.columns:
+        df["Allocation (%)"] = num(df["Allocation (%)"])
+        grouped = df.groupby("Fund")["Allocation (%)"].sum()
+        for amc, pct in grouped.items():
             if pct > 20:
-                alerts.append(f"⚠ AMC Overweight: {amc} = {pct:.2f}% (Limit: 20%)")
+                alerts.append(f"⚠ {amc} = {pct:.2f}% (> 20% AMC limit)")
     return alerts
 
-# -------------------------------
-# SUGGESTION ENGINE
-# -------------------------------
-def generate_suggestions(df, model):
 
-    # Calculate category sums
-    df["Category"] = df["Sub Category"].apply(classify)
+# ----------------- Action suggestions -----------------
+def suggest_increase_sip(sip_df, extra_amount):
+    if sip_df is None:
+        return "No SIP data found in PDF."
 
-    total = df["Current Value"].sum()
-    eq = df[df["Category"] == "Equity"]["Current Value"].sum()
-    debt = df[df["Category"] == "Debt"]["Current Value"].sum()
-    liq = df[df["Category"] == "Liquid"]["Current Value"].sum()
+    df = sip_df.copy()
+    # First column should be Scheme name
+    scheme_col = [c for c in df.columns if "scheme" in str(c).lower()]
+    if not scheme_col:
+        return "Could not detect Scheme column in SIP summary."
+    scheme_col = scheme_col[0]
 
-    eq_pct = round(eq / total * 100, 2)
-    debt_pct = round(debt / total * 100, 2)
-    liq_pct = round(liq / total * 100, 2)
+    schemes = df[scheme_col].dropna().unique().tolist()
+    if not schemes:
+        return "No active SIP schemes found."
 
+    per_scheme = extra_amount / len(schemes) if extra_amount > 0 else 0
+    res = pd.DataFrame(
+        {"Scheme": schemes, "Additional SIP / month (₹)": [round(per_scheme, 2)] * len(schemes)}
+    )
+    return res
+
+
+def suggest_lumpsum(scheme_df, subcat_df, amount, model):
+    if scheme_df is None or subcat_df is None or amount <= 0:
+        return "Not enough data to suggest lumpsum allocation."
+
+    alloc = compute_current_allocation(subcat_df)
     target = get_target_allocation(model)
 
-    suggestions = []
+    equity_gap = target["Equity"] - alloc.get("Equity", 0)
+    if equity_gap <= 0:
+        note = "Current equity % is already at or above target. You may invest lumpsum into Debt or Liquid as per need."
+        return note
 
-    # ---------------- SIP Suggestions ----------------
-    if eq_pct < target["Equity"]:
-        diff = target["Equity"] - eq_pct
-        suggestions.append(f"📌 Increase SIP in existing equity SIP funds to reach +{diff:.2f}% equity.")
-    else:
-        suggestions.append("✔ Equity SIP allocation looks fine.")
+    # identify equity-oriented schemes (simple name-based)
+    df = scheme_df.copy()
+    scheme_col = [c for c in df.columns if "scheme" in str(c).lower()][0]
+    curr_val_col = [c for c in df.columns if "current value" in str(c).lower()][0]
 
-    # ---------------- Lumpsum Suggestions ----------------
-    if liq_pct > target["Liquid"]:
-        suggestions.append("📌 Invest part of Liquid funds into Equity/Multi-cap based on selected risk model.")
+    df[curr_val_col] = num(df[curr_val_col])
 
-    # ---------------- Redemption Suggestions ----------------
-    suggestions.append("📌 For withdrawals: Redeem from Liquid → then Debt → avoid Equity.")
+    def is_equity_name(x):
+        s = str(x).lower()
+        return any(k in s for k in ["flexi", "mid", "small", "equity"])
 
-    # ---------------- AMC LIMIT ----------------
-    amc_alert = amc_exposure_alerts(df)
-    suggestions.extend(amc_alert)
+    eq_df = df[df[scheme_col].apply(is_equity_name)].copy()
+    if eq_df.empty:
+        return "No equity schemes found to invest lumpsum."
 
-    return suggestions, {"Equity": eq_pct, "Debt": debt_pct, "Liquid": liq_pct}
+    total_curr = eq_df[curr_val_col].sum()
+    eq_df["Suggested Lumpsum (₹)"] = eq_df[curr_val_col] / total_curr * amount
+    return eq_df[[scheme_col, "Suggested Lumpsum (₹)"]]
 
-# ------------------------------------------------------
-# FRONTEND UI
-# ------------------------------------------------------
+
+def suggest_redeem(scheme_df, amount):
+    if scheme_df is None or amount <= 0:
+        return "Not enough data to suggest redemption."
+
+    df = scheme_df.copy()
+    scheme_col = [c for c in df.columns if "scheme" in str(c).lower()][0]
+    curr_val_col = [c for c in df.columns if "current value" in str(c).lower()][0]
+    df[curr_val_col] = num(df[curr_val_col])
+
+    def is_liquid_name(x):
+        return "liquid" in str(x).lower()
+
+    liq_df = df[df[scheme_col].apply(is_liquid_name)].copy()
+    if liq_df.empty:
+        return "No Liquid schemes found – you may need to redeem from Debt funds manually."
+
+    total_liq = liq_df[curr_val_col].sum()
+    if total_liq == 0:
+        return "Liquid value is zero."
+
+    liq_df["Suggested Redemption (₹)"] = liq_df[curr_val_col] / total_liq * amount
+    return liq_df[[scheme_col, "Suggested Redemption (₹)"]]
+
+
+# ----------------- UI -----------------
 st.title("📊 Portfolio Auto Analyzer")
-st.write("Upload your Mutual Fund portfolio PDF to get automatic analysis + suggestions.")
+st.write("Upload your Mutual Fund portfolio PDF (same SLA Finserv format) to see summary and get suggestions.")
 
-uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
-
+uploaded = st.file_uploader("Upload PDF", type=["pdf"])
 risk_model = st.radio("Select Risk Profile", ["Conservative", "Moderate", "Aggressive"])
 
-if uploaded_pdf:
-    st.success("PDF uploaded! Reading data...")
+if uploaded:
+    sections = parse_pdf_sections(uploaded)
 
-    df = extract_mf_table(uploaded_pdf)
+    applicant = sections["applicant"]
+    fund = sections["fund"]
+    scheme = sections["scheme"]
+    subcat = sections["subcat"]
+    sip = sections["sip"]
 
-    if df is None:
-        st.error("❌ Unable to detect Mutual Fund table. PDF format mismatch.")
+    # ---- 1. Applicant Summary ----
+    st.header("1️⃣ Portfolio Summary")
+
+    if applicant is not None:
+        a = applicant.copy()
+        a_cols = [c.lower() for c in a.columns]
+
+        # Try to pull values from first row
+        row = a.iloc[0]
+        name = row.get("Applicant", "N/A")
+        pur = row.get("Purchase Value", None)
+        cur = row.get("Current Value", None)
+        abs_ret = row.get("Absolute Return (%)", None)
+        cagr = row.get("CAGR (%)", None)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Client Name", str(name))
+        if pur is not None:
+            col2.metric("Purchase Value (₹)", f"{pur}")
+        if cur is not None:
+            col3.metric("Current Value (₹)", f"{cur}")
+
+        col4, col5 = st.columns(2)
+        if abs_ret is not None:
+            col4.metric("Absolute Return (%)", f"{abs_ret}")
+        if cagr is not None:
+            col5.metric("CAGR (%)", f"{cagr}")
+
+        st.write("Raw table:")
+        st.dataframe(applicant)
     else:
-        st.subheader("📄 Extracted Mutual Fund Data")
-        st.dataframe(df)
+        st.info("Applicant summary table not detected.")
 
-        # Suggestions
-        st.subheader("📌 Suggestions")
-        s, alloc = generate_suggestions(df, risk_model)
+    # ---- 2. AMC Wise Allocation ----
+    st.header("2️⃣ AMC-wise Allocation")
+    if fund is not None:
+        # numeric clean
+        if "Allocation (%)" in fund.columns:
+            fund["Allocation (%)"] = num(fund["Allocation (%)"])
+        st.dataframe(fund)
 
-        for x in s:
-            st.write(x)
+        fig1, ax1 = plt.subplots()
+        ax1.bar(fund["Fund"].astype(str), fund["Allocation (%)"])
+        ax1.set_xticklabels(fund["Fund"].astype(str), rotation=45, ha="right")
+        ax1.set_ylabel("Allocation (%)")
+        st.pyplot(fig1)
+    else:
+        st.info("AMC allocation table not detected.")
 
-        # Allocation chart
-        st.subheader("📊 Category Allocation")
+    # ---- 3. Sub Category Allocation ----
+    st.header("3️⃣ Sub-category Allocation")
+    if subcat is not None:
+        if "Allocation (%)" in subcat.columns:
+            subcat["Allocation (%)"] = num(subcat["Allocation (%)"])
+        st.dataframe(subcat)
 
-        fig, ax = plt.subplots(facecolor="#111111")
-        ax.set_facecolor("#111111")
+        alloc = compute_current_allocation(subcat)
+        if alloc:
+            fig2, ax2 = plt.subplots()
+            ax2.bar(list(alloc.keys()), list(alloc.values()))
+            ax2.set_ylabel("Allocation (%)")
+            st.pyplot(fig2)
+    else:
+        st.info("Sub-category allocation table not detected.")
 
-        labels = list(alloc.keys())
-        values = list(alloc.values())
+    # ---- 4. SIP Summary ----
+    st.header("4️⃣ SIP Summary")
+    if sip is not None:
+        st.dataframe(sip)
+    else:
+        st.info("SIP summary table not detected.")
 
-        ax.bar(labels, values)
-        ax.set_title("Category Allocation", color="white")
-        ax.tick_params(colors="white")
+    # ---- AMC exposure alerts ----
+    st.subheader("⚠ AMC Exposure Check")
+    alerts = amc_exposure(fund)
+    if alerts:
+        for a in alerts:
+            st.write(a)
+    else:
+        st.write("No AMC above 20% (or data not available).")
 
-        st.pyplot(fig)
+    # ---- What do you want to do? ----
+    st.header("5️⃣ Action & Suggestions")
+
+    action = st.radio("What do you want to do?", ["Increase SIP", "Invest Lumpsum", "Redeem"])
+    amount = st.number_input("Enter amount (₹)", min_value=0.0, step=1000.0)
+
+    if st.button("Show Suggestion"):
+        if action == "Increase SIP":
+            res = suggest_increase_sip(sip, amount)
+            if isinstance(res, pd.DataFrame):
+                st.write("Suggested increase in SIP per scheme:")
+                st.dataframe(res)
+            else:
+                st.write(res)
+
+        elif action == "Invest Lumpsum":
+            res = suggest_lumpsum(scheme, subcat, amount, risk_model)
+            if isinstance(res, pd.DataFrame):
+                st.write("Suggested lumpsum allocation into schemes:")
+                st.dataframe(res)
+            else:
+                st.write(res)
+
+        elif action == "Redeem":
+            res = suggest_redeem(scheme, amount)
+            if isinstance(res, pd.DataFrame):
+                st.write("Suggested redemption from Liquid schemes:")
+                st.dataframe(res)
+            else:
+                st.write(res)
