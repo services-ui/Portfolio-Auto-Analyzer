@@ -1,34 +1,14 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
 import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Portfolio Auto Analyzer", layout="wide")
 
 
-# ---------- Helpers ----------
-def clean_table(table):
-    df = pd.DataFrame(table)
-    df.replace("", None, inplace=True)
-    df.dropna(how="all", axis=0, inplace=True)
-    df.dropna(how="all", axis=1, inplace=True)
-    if df.empty or df.shape[0] < 2:
-        return None
-    # make first row header
-    header = df.iloc[0]
-    df = df[1:].copy()
-    df.columns = header
-    df.columns = (
-        df.columns.astype(str)
-        .str.strip()
-        .str.replace("\n", " ")
-        .str.replace("  ", " ")
-    )
-    return df
-
+# ---------- Helper functions ----------
 
 def num(series):
-    """Convert column to numeric if possible."""
+    """Convert a column to numeric if possible."""
     try:
         return (
             series.astype(str)
@@ -43,7 +23,7 @@ def num(series):
 
 
 def find_col(df, keywords):
-    """Find column whose name contains any of the keywords."""
+    """Find first column whose name contains any of the given keywords."""
     cols = df.columns.astype(str)
     for k in keywords:
         for c in cols:
@@ -72,26 +52,12 @@ def get_target_allocation(model):
         return {"Equity": 60, "Debt": 20, "Liquid": 20}
 
 
-# ---------- PDF → list of tables ----------
-def extract_all_tables(pdf_file):
-    dfs = []
-    with pdfplumber.open(pdf_file) as pdf:
-        for page in pdf.pages:
-            tables = page.extract_tables()
-            for t in tables:
-                df = clean_table(t)
-                if df is not None:
-                    dfs.append(df)
-    return dfs
-
-
-# ---------- Suggestions ----------
 def compute_current_allocation(subcat_df):
     if subcat_df is None:
         return None
     df = subcat_df.copy()
     alloc_col = find_col(df, ["allocation"])
-    subcat_col = find_col(df, ["sub category", "sub-category", "subcategory"])
+    subcat_col = find_col(df, ["sub category", "subcategory"])
     if alloc_col is None or subcat_col is None:
         return None
     df[alloc_col] = num(df[alloc_col])
@@ -121,11 +87,11 @@ def amc_exposure(fund_df):
 
 def suggest_increase_sip(sip_df, amount):
     if sip_df is None or amount <= 0:
-        return "No SIP data or amount is 0."
+        return "No SIP data or amount = 0."
 
     scheme_col = find_col(sip_df, ["scheme"])
     if scheme_col is None:
-        return "Could not detect Scheme column in SIP summary."
+        return "Could not detect Scheme column in SIP sheet."
 
     schemes = sip_df[scheme_col].dropna().unique().tolist()
     if not schemes:
@@ -140,7 +106,7 @@ def suggest_increase_sip(sip_df, amount):
 
 def suggest_lumpsum(scheme_df, subcat_df, amount, model):
     if scheme_df is None or subcat_df is None or amount <= 0:
-        return "Not enough data to suggest lumpsum."
+        return "Not enough data or amount = 0."
 
     target = get_target_allocation(model)
     alloc = compute_current_allocation(subcat_df)
@@ -149,13 +115,13 @@ def suggest_lumpsum(scheme_df, subcat_df, amount, model):
 
     equity_gap = target["Equity"] - alloc.get("Equity", 0)
     if equity_gap <= 0:
-        return "Equity is already at or above target %; you may prefer Debt/Liquid."
+        return "Equity already at/above target %. Consider Debt/Liquid."
 
     sch = scheme_df.copy()
     scheme_col = find_col(sch, ["scheme"])
     curr_col = find_col(sch, ["current value"])
     if scheme_col is None or curr_col is None:
-        return "Could not detect scheme/current value columns."
+        return "Could not detect Scheme / Current Value columns."
 
     sch[curr_col] = num(sch[curr_col])
 
@@ -165,7 +131,7 @@ def suggest_lumpsum(scheme_df, subcat_df, amount, model):
 
     eq_df = sch[sch[scheme_col].apply(is_equity_name)].copy()
     if eq_df.empty:
-        return "No equity schemes found to invest lumpsum."
+        return "No equity schemes found for lumpsum."
 
     total_curr = eq_df[curr_col].sum()
     if total_curr == 0:
@@ -177,13 +143,13 @@ def suggest_lumpsum(scheme_df, subcat_df, amount, model):
 
 def suggest_redeem(scheme_df, amount):
     if scheme_df is None or amount <= 0:
-        return "Not enough data or amount is 0."
+        return "Not enough data or amount = 0."
 
     sch = scheme_df.copy()
     scheme_col = find_col(sch, ["scheme"])
     curr_col = find_col(sch, ["current value"])
     if scheme_col is None or curr_col is None:
-        return "Could not detect scheme/current value columns."
+        return "Could not detect Scheme / Current Value columns."
 
     sch[curr_col] = num(sch[curr_col])
 
@@ -203,157 +169,157 @@ def suggest_redeem(scheme_df, amount):
 
 
 # ---------- UI ----------
-st.title("📊 Portfolio Auto Analyzer")
-st.write("Upload your Mutual Fund portfolio PDF (same format each time).")
 
-uploaded = st.file_uploader("Upload PDF", type=["pdf"])
+st.title("📊 Portfolio Auto Analyzer (Excel Version)")
+st.write("Upload your Mutual Fund portfolio **Excel file** (same format each time).")
+
+uploaded = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
 risk_model = st.radio("Select Risk Profile", ["Conservative", "Moderate", "Aggressive"])
 
 if uploaded:
-    st.success("PDF uploaded – extracting tables...")
-    tables = extract_all_tables(uploaded)
+    st.success("Excel uploaded – reading sheets...")
 
-    if not tables:
-        st.error("No tables detected in this PDF.")
+    # read all sheets into dict: {sheet_name: dataframe}
+    try:
+        sheets = pd.read_excel(uploaded, sheet_name=None)
+    except Exception as e:
+        st.error(f"Could not read Excel file: {e}")
+        st.stop()
+
+    sheet_names = list(sheets.keys())
+    st.info(f"Detected {len(sheet_names)} sheets: {', '.join(sheet_names)}")
+
+    # show previews
+    for name in sheet_names:
+        with st.expander(f"Preview sheet: {name}"):
+            st.dataframe(sheets[name])
+
+    st.markdown("---")
+    st.subheader("Step 1 – Map sheets")
+
+    sheet_summary = st.selectbox(
+        "Sheet for Portfolio Summary (Name, Purchase, Current, Returns)",
+        options=sheet_names,
+    )
+
+    sheet_amc = st.selectbox(
+        "Sheet for AMC-wise Allocation",
+        options=sheet_names,
+    )
+
+    sheet_subcat = st.selectbox(
+        "Sheet for Sub-category Allocation",
+        options=sheet_names,
+    )
+
+    sheet_scheme = st.selectbox(
+        "Sheet for Scheme-wise Allocation (Purchase/Current Value)",
+        options=sheet_names,
+    )
+
+    sheet_sip = st.selectbox(
+        "Sheet for SIP Summary",
+        options=sheet_names,
+    )
+
+    summary_df = sheets[sheet_summary].copy()
+    amc_df = sheets[sheet_amc].copy()
+    subcat_df = sheets[sheet_subcat].copy()
+    scheme_df = sheets[sheet_scheme].copy()
+    sip_df = sheets[sheet_sip].copy()
+
+    # ---------- 1. Portfolio summary ----------
+    st.markdown("---")
+    st.header("1️⃣ Portfolio Summary")
+
+    name_col = find_col(summary_df, ["applicant", "name"])
+    pur_col = find_col(summary_df, ["purchase value"])
+    cur_col = find_col(summary_df, ["current value"])
+    abs_col = find_col(summary_df, ["absolute"])
+    cagr_col = find_col(summary_df, ["cagr"])
+
+    name_val = summary_df[name_col].iloc[0] if name_col else "N/A"
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Client Name", str(name_val))
+    if pur_col:
+        col2.metric("Purchase Value (₹)", str(summary_df[pur_col].iloc[0]))
+    if cur_col:
+        col3.metric("Current Value (₹)", str(summary_df[cur_col].iloc[0]))
+
+    col4, col5 = st.columns(2)
+    if abs_col:
+        col4.metric("Absolute Return (%)", str(summary_df[abs_col].iloc[0]))
+    if cagr_col:
+        col5.metric("CAGR (%)", str(summary_df[cagr_col].iloc[0]))
+
+    st.write("Summary sheet:")
+    st.dataframe(summary_df)
+
+    # ---------- 2. AMC-wise allocation ----------
+    st.header("2️⃣ AMC-wise Allocation")
+    st.dataframe(amc_df)
+
+    alloc_col_amc = find_col(amc_df, ["allocation"])
+    fund_col_amc = find_col(amc_df, ["fund"])
+    if alloc_col_amc and fund_col_amc:
+        amc_df[alloc_col_amc] = num(amc_df[alloc_col_amc])
+        fig1, ax1 = plt.subplots()
+        ax1.bar(amc_df[fund_col_amc].astype(str), amc_df[alloc_col_amc])
+        ax1.set_xticklabels(amc_df[fund_col_amc].astype(str), rotation=45, ha="right")
+        ax1.set_ylabel("Allocation (%)")
+        st.pyplot(fig1)
+
+    st.subheader("⚠ AMC Exposure Check (20% limit)")
+    alerts = amc_exposure(amc_df)
+    if alerts:
+        for a in alerts:
+            st.write(a)
     else:
-        st.info(f"Detected {len(tables)} tables in the PDF.")
+        st.write("No AMC above 20% (or allocation data not clear).")
 
-        # Show all tables in expanders so you can see which is which
-        for i, df in enumerate(tables):
-            with st.expander(f"Preview Table {i+1}"):
-                st.dataframe(df)
+    # ---------- 3. Sub-category allocation ----------
+    st.header("3️⃣ Sub-category Allocation")
+    st.dataframe(subcat_df)
 
-        st.markdown("---")
-        st.subheader("Step 1 – Map tables")
+    alloc = compute_current_allocation(subcat_df)
+    if alloc:
+        fig2, ax2 = plt.subplots()
+        ax2.bar(list(alloc.keys()), list(alloc.values()))
+        ax2.set_ylabel("Allocation (%)")
+        st.pyplot(fig2)
 
-        idx_summary = st.selectbox(
-            "Select table for Portfolio Summary (Name, Purchase, Current, Returns)",
-            options=list(range(len(tables))),
-            format_func=lambda i: f"Table {i+1}",
-        )
+    # ---------- 4. SIP Summary ----------
+    st.header("4️⃣ SIP Summary")
+    st.dataframe(sip_df)
 
-        idx_amc = st.selectbox(
-            "Select table for AMC-wise Allocation",
-            options=list(range(len(tables))),
-            format_func=lambda i: f"Table {i+1}",
-        )
+    # ---------- 5. Action & Suggestions ----------
+    st.markdown("---")
+    st.header("4️⃣ Action & Suggestions")
 
-        idx_subcat = st.selectbox(
-            "Select table for Sub-category Allocation",
-            options=list(range(len(tables))),
-            format_func=lambda i: f"Table {i+1}",
-        )
+    action = st.radio("What do you want to do?", ["Increase SIP", "Invest Lumpsum", "Redeem"])
+    amt = st.number_input("Enter amount (₹)", min_value=0.0, step=1000.0)
 
-        idx_scheme = st.selectbox(
-            "Select table for Scheme-wise Allocation (Purchase/Current value)",
-            options=list(range(len(tables))),
-            format_func=lambda i: f"Table {i+1}",
-        )
+    if st.button("Show Suggestion"):
+        if action == "Increase SIP":
+            res = suggest_increase_sip(sip_df, amt)
+            if isinstance(res, pd.DataFrame):
+                st.write("Suggested extra SIP per scheme:")
+                st.dataframe(res)
+            else:
+                st.write(res)
 
-        idx_sip = st.selectbox(
-            "Select table for SIP Summary",
-            options=list(range(len(tables))),
-            format_func=lambda i: f"Table {i+1}",
-        )
+        elif action == "Invest Lumpsum":
+            res = suggest_lumpsum(scheme_df, subcat_df, amt, risk_model)
+            if isinstance(res, pd.DataFrame):
+                st.write("Suggested lumpsum allocation:")
+                st.dataframe(res)
+            else:
+                st.write(res)
 
-        summary_df = tables[idx_summary]
-        amc_df = tables[idx_amc]
-        subcat_df = tables[idx_subcat]
-        scheme_df = tables[idx_scheme]
-        sip_df = tables[idx_sip]
-
-        st.markdown("---")
-        st.header("1️⃣ Portfolio Summary")
-
-        # try to show metrics from summary table
-        name_col = find_col(summary_df, ["applicant", "name"])
-        pur_col = find_col(summary_df, ["purchase value"])
-        cur_col = find_col(summary_df, ["current value"])
-        abs_col = find_col(summary_df, ["absolute"])
-        cagr_col = find_col(summary_df, ["cagr"])
-
-        if name_col:
-            name_val = summary_df[name_col].iloc[0]
-        else:
-            name_val = "N/A"
-
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Client Name", str(name_val))
-        if pur_col:
-            col2.metric("Purchase Value (₹)", str(summary_df[pur_col].iloc[0]))
-        if cur_col:
-            col3.metric("Current Value (₹)", str(summary_df[cur_col].iloc[0]))
-
-        col4, col5 = st.columns(2)
-        if abs_col:
-            col4.metric("Absolute Return (%)", str(summary_df[abs_col].iloc[0]))
-        if cagr_col:
-            col5.metric("CAGR (%)", str(summary_df[cagr_col].iloc[0]))
-
-        st.write("Summary table:")
-        st.dataframe(summary_df)
-
-        st.header("2️⃣ AMC-wise Allocation")
-        st.dataframe(amc_df)
-
-        alloc_col_amc = find_col(amc_df, ["allocation"])
-        fund_col_amc = find_col(amc_df, ["fund"])
-        if alloc_col_amc and fund_col_amc:
-            amc_df[alloc_col_amc] = num(amc_df[alloc_col_amc])
-            fig1, ax1 = plt.subplots()
-            ax1.bar(amc_df[fund_col_amc].astype(str), amc_df[alloc_col_amc])
-            ax1.set_xticklabels(amc_df[fund_col_amc].astype(str), rotation=45, ha="right")
-            ax1.set_ylabel("Allocation (%)")
-            st.pyplot(fig1)
-
-        st.header("3️⃣ Sub-category Allocation")
-        st.dataframe(subcat_df)
-
-        alloc = compute_current_allocation(subcat_df)
-        if alloc:
-            fig2, ax2 = plt.subplots()
-            ax2.bar(list(alloc.keys()), list(alloc.values()))
-            ax2.set_ylabel("Allocation (%)")
-            st.pyplot(fig2)
-
-        st.header("4️⃣ SIP Summary")
-        st.dataframe(sip_df)
-
-        st.subheader("⚠ AMC Exposure Check (20% limit)")
-        alerts = amc_exposure(amc_df)
-        if alerts:
-            for a in alerts:
-                st.write(a)
-        else:
-            st.write("No AMC above 20% (or allocation data not clear).")
-
-        st.markdown("---")
-        st.header("5️⃣ Action & Suggestions")
-
-        action = st.radio("What do you want to do?", ["Increase SIP", "Invest Lumpsum", "Redeem"])
-        amt = st.number_input("Enter amount (₹)", min_value=0.0, step=1000.0)
-
-        if st.button("Show Suggestion"):
-            if action == "Increase SIP":
-                res = suggest_increase_sip(sip_df, amt)
-                if isinstance(res, pd.DataFrame):
-                    st.write("Suggested extra SIP per scheme:")
-                    st.dataframe(res)
-                else:
-                    st.write(res)
-
-            elif action == "Invest Lumpsum":
-                res = suggest_lumpsum(scheme_df, subcat_df, amt, risk_model)
-                if isinstance(res, pd.DataFrame):
-                    st.write("Suggested lumpsum allocation:")
-                    st.dataframe(res)
-                else:
-                    st.write(res)
-
-            elif action == "Redeem":
-                res = suggest_redeem(scheme_df, amt)
-                if isinstance(res, pd.DataFrame):
-                    st.write("Suggested redemption from Liquid schemes:")
-                    st.dataframe(res)
-                else:
-                    st.write(res)
+        elif action == "Redeem":
+            res = suggest_redeem(scheme_df, amt)
+            if isinstance(res, pd.DataFrame):
+                st.write("Suggested redemption from Liquid schemes:")
+                st.dataframe(res)
+            else:
+                st.write(res)
