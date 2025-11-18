@@ -1,70 +1,95 @@
 import streamlit as st
 import pandas as pd
 import pdfplumber
-import re
-from io import BytesIO
 import matplotlib.pyplot as plt
+from io import BytesIO
 
 st.set_page_config(page_title="Portfolio Auto Analyzer", layout="wide")
 
-# -------------------------------
-# PDF PARSER (your SLA Mint format)
-# -------------------------------
-def extract_tables_from_pdf(upload):
-    data = []
-    with pdfplumber.open(upload) as pdf:
+# ------------------------------------------------------
+# PDF PARSER (FULLY UPDATED FOR SLA FINSERV / MINT PDFs)
+# ------------------------------------------------------
+def extract_mf_table(pdf_file):
+    with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             tables = page.extract_tables()
+
             for table in tables:
                 df = pd.DataFrame(table)
-                data.append(df)
-    return data
 
-# -------------------------------
-# CLEAN TABLE FOR MF ONLY
-# -------------------------------
-def get_mutual_funds(clean_tables):
-    mf_rows = []
-    for df in clean_tables:
-        for i, row in df.iterrows():
-            if "Fund" in str(row[0]) or "Scheme" in str(row[0]):
-                continue
-            # Key pattern for MF row: contains NAV or Allocation %
-            if re.search(r'\d', str(row[0])):
-                continue
-        # Try identifying scheme table by known column patterns
-        if df.shape[1] >= 5:
-            if "Purchase Value" in df.iloc[0].astype(str).tolist():
-                df.columns = df.iloc[0]
-                df = df[1:]
-                return df
+                # Clean raw data
+                df.replace("", None, inplace=True)
+                df.dropna(how="all", axis=0, inplace=True)
+                df.dropna(how="all", axis=1, inplace=True)
+
+                # Skip tiny tables
+                if df.shape[1] < 3:
+                    continue
+
+                # Detect MF table using headers
+                header_text = " ".join(df.iloc[0].astype(str).tolist()).lower()
+
+                if (
+                    "scheme" in header_text
+                    or "fund" in header_text
+                    or "purchase value" in header_text
+                    or "current value" in header_text
+                    or "allocation" in header_text
+                ):
+                    # First row = header
+                    df.columns = df.iloc[0]
+                    df = df[1:]
+
+                    # Clean column names
+                    df.columns = (
+                        df.columns.str.strip()
+                        .str.replace("\n", " ")
+                        .str.replace("  ", " ")
+                    )
+
+                    # Select relevant columns
+                    keep = [c for c in df.columns if any(
+                        k in str(c).lower() for k in [
+                            "scheme", "fund", "sub", "category",
+                            "purchase", "current", "allocation", "%"
+                        ])]
+
+                    df = df[keep]
+
+                    # Drop empty rows
+                    df.dropna(how="all", axis=0, inplace=True)
+
+                    # Try converting numbers
+                    for col in df.columns:
+                        try:
+                            df[col] = (
+                                df[col].astype(str)
+                                .str.replace(",", "")
+                                .str.replace("%", "")
+                                .astype(float)
+                            )
+                        except:
+                            pass
+
+                    return df
+
     return None
 
-# -------------------------------
-# CATEGORY DETECTION
-# -------------------------------
-def categorize(subcat):
-    if "Liquid" in subcat:
+# -----------------------
+# CATEGORY CLASSIFICATION
+# -----------------------
+def classify(row):
+    sub = str(row).lower()
+    if "liquid" in sub:
         return "Liquid"
-    if "Gilt" in subcat or "Debt" in subcat:
+    if "gilt" in sub or "debt" in sub:
         return "Debt"
-    if "Equity" in subcat:
+    if "equity" in sub or "mid" in sub or "small" in sub or "large" in sub or "flexi" in sub:
         return "Equity"
-    return "Others"
+    return "Other"
 
 # -------------------------------
-# AMC Exposure Check
-# -------------------------------
-def check_amc_exposure(df):
-    alerts = []
-    grouped = df.groupby("Fund")["Allocation (%)"].sum()
-    for amc, val in grouped.items():
-        if float(val) > 20:
-            alerts.append(f"⚠ {amc} AMC is {val}% (Above 20% limit)")
-    return alerts
-
-# -------------------------------
-# RISK MODEL TARGET ALLOCATION
+# TARGET ALLOCATION (3 MODELS)
 # -------------------------------
 def get_target_allocation(model):
     if model == "Conservative":
@@ -75,52 +100,62 @@ def get_target_allocation(model):
         return {"Equity": 60, "Debt": 20, "Liquid": 20}
 
 # -------------------------------
+# AMC EXPOSURE (20% limit)
+# -------------------------------
+def amc_exposure_alerts(df):
+    alerts = []
+    if "Fund" in df.columns:
+        amcs = df.groupby("Fund")["Allocation (%)"].sum()
+        for amc, pct in amcs.items():
+            if pct > 20:
+                alerts.append(f"⚠ AMC Overweight: {amc} = {pct:.2f}% (Limit: 20%)")
+    return alerts
+
+# -------------------------------
 # SUGGESTION ENGINE
 # -------------------------------
-def suggestions(df, model):
+def generate_suggestions(df, model):
 
-    # Extract needed data
-    total = df["Current Value"].astype(float).sum()
-    equity = df[df["Sub Category"].str.contains("Equity")]["Current Value"].astype(float).sum()
-    debt = df[df["Sub Category"].str.contains("Debt")]["Current Value"].astype(float).sum()
-    liquid = df[df["Sub Category"].str.contains("Liquid")]["Current Value"].astype(float).sum()
+    # Calculate category sums
+    df["Category"] = df["Sub Category"].apply(classify)
 
-    eq_pct = round((equity / total) * 100, 2)
-    dt_pct = round((debt / total) * 100, 2)
-    liq_pct = round((liquid / total) * 100, 2)
+    total = df["Current Value"].sum()
+    eq = df[df["Category"] == "Equity"]["Current Value"].sum()
+    debt = df[df["Category"] == "Debt"]["Current Value"].sum()
+    liq = df[df["Category"] == "Liquid"]["Current Value"].sum()
+
+    eq_pct = round(eq / total * 100, 2)
+    debt_pct = round(debt / total * 100, 2)
+    liq_pct = round(liq / total * 100, 2)
 
     target = get_target_allocation(model)
 
-    sug = []
+    suggestions = []
 
-    # ---------------- SIP SUGGESTION ----------------
+    # ---------------- SIP Suggestions ----------------
     if eq_pct < target["Equity"]:
         diff = target["Equity"] - eq_pct
-        sug.append(f"👉 Increase SIP in existing Equity SIP funds to reach +{diff:.2f}% equity.")
+        suggestions.append(f"📌 Increase SIP in existing equity SIP funds to reach +{diff:.2f}% equity.")
     else:
-        sug.append("✔ Equity SIP allocation is aligned.")
+        suggestions.append("✔ Equity SIP allocation looks fine.")
 
-    # ---------------- LUMPSUM SUGGESTION ----------------
+    # ---------------- Lumpsum Suggestions ----------------
     if liq_pct > target["Liquid"]:
-        sug.append("👉 Shift portion of Liquid funds into Equity/Multi-cap fund (based on model).")
+        suggestions.append("📌 Invest part of Liquid funds into Equity/Multi-cap based on selected risk model.")
 
-    # ---------------- REDEMPTION SUGGESTION ----------------
-    if liq_pct < 10:
-        sug.append("✔ Liquid allocation is low. Avoid redemption.")
-    else:
-        sug.append("👉 If you need cash, redeem from Liquid funds first (your rule).")
+    # ---------------- Redemption Suggestions ----------------
+    suggestions.append("📌 For withdrawals: Redeem from Liquid → then Debt → avoid Equity.")
 
-    # ---------------- AMC EXPOSURE ----------------
-    amc_alerts = check_amc_exposure(df)
-    sug.extend(amc_alerts)
+    # ---------------- AMC LIMIT ----------------
+    amc_alert = amc_exposure_alerts(df)
+    suggestions.extend(amc_alert)
 
-    return sug, {"Equity": eq_pct, "Debt": dt_pct, "Liquid": liq_pct}
+    return suggestions, {"Equity": eq_pct, "Debt": debt_pct, "Liquid": liq_pct}
 
-# -------------------------------
+# ------------------------------------------------------
 # FRONTEND UI
-# -------------------------------
+# ------------------------------------------------------
 st.title("📊 Portfolio Auto Analyzer")
-
 st.write("Upload your Mutual Fund portfolio PDF to get automatic analysis + suggestions.")
 
 uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
@@ -128,26 +163,24 @@ uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"])
 risk_model = st.radio("Select Risk Profile", ["Conservative", "Moderate", "Aggressive"])
 
 if uploaded_pdf:
-    st.success("PDF uploaded successfully! Reading data...")
+    st.success("PDF uploaded! Reading data...")
 
-    tables = extract_tables_from_pdf(uploaded_pdf)
+    df = extract_mf_table(uploaded_pdf)
 
-    mf_table = get_mutual_funds(tables)
-
-    if mf_table is None:
-        st.error("Unable to detect MF table. PDF format mismatch.")
+    if df is None:
+        st.error("❌ Unable to detect Mutual Fund table. PDF format mismatch.")
     else:
-        st.subheader("Extracted Mutual Fund Table")
-        st.dataframe(mf_table)
+        st.subheader("📄 Extracted Mutual Fund Data")
+        st.dataframe(df)
 
         # Suggestions
         st.subheader("📌 Suggestions")
-        sug, alloc = suggestions(mf_table, risk_model)
+        s, alloc = generate_suggestions(df, risk_model)
 
-        for s in sug:
-            st.write(s)
+        for x in s:
+            st.write(x)
 
-        # Allocation Chart
+        # Allocation chart
         st.subheader("📊 Category Allocation")
 
         fig, ax = plt.subplots(facecolor="#111111")
@@ -156,9 +189,8 @@ if uploaded_pdf:
         labels = list(alloc.keys())
         values = list(alloc.values())
 
-        plt.bar(labels, values)
-        plt.title("Category Allocation", color="white")
-        plt.xticks(color="white")
-        plt.yticks(color="white")
+        ax.bar(labels, values)
+        ax.set_title("Category Allocation", color="white")
+        ax.tick_params(colors="white")
 
         st.pyplot(fig)
