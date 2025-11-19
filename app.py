@@ -187,7 +187,7 @@ subcat_col = find_col_like(df.columns, ["CATEGORY", "SUB CATEGORY", "SUBCATEGORY
 
 # Clean numeric columns if present
 for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
-    if col is not None and df[col].dtype != "float64" and df[col].dtype != "int64":
+    if col is not None and df[col].dtype not in ("float64", "int64"):
         try:
             df[col] = num(df[col])
         except Exception:
@@ -241,7 +241,7 @@ else:
 st.write("Underlying scheme-level table (without GRAND TOTAL row):")
 st.dataframe(df_no_total.reset_index(drop=True))
 
-# ---------- 2. Category-wise Allocation (PIE) ----------
+# ---------- 2. Category-wise Allocation (SMALL PIE) ----------
 
 st.markdown("---")
 st.header("2️⃣ Category-wise Allocation (from Category/Sub-category column)")
@@ -263,14 +263,14 @@ if current_col:
 
     st.dataframe(cat_table)
 
-    fig_cat, ax_cat = plt.subplots()
+    fig_cat, ax_cat = plt.subplots(figsize=(4, 4))  # smaller pie
     ax_cat.pie(cat_group_val.values, labels=cat_group_val.index.astype(str), autopct="%1.1f%%")
-    ax_cat.set_title("Category-wise Allocation")
+    ax_cat.set_title("Category-wise Allocation", fontsize=10)
     st.pyplot(fig_cat)
 else:
     st.info("Could not detect Current Value column to build category allocation.")
 
-# ---------- 3. Sub-category Allocation (PIE) ----------
+# ---------- 3. Sub-category Allocation (SMALL PIE) ----------
 
 st.markdown("---")
 st.header("3️⃣ Sub-category Allocation (Equity: Small Cap, etc.)")
@@ -292,9 +292,9 @@ if current_col:
 
     st.dataframe(sub_table)
 
-    fig_sub, ax_sub = plt.subplots()
+    fig_sub, ax_sub = plt.subplots(figsize=(4, 4))  # smaller pie
     ax_sub.pie(sub_group_val.values, labels=sub_group_val.index.astype(str), autopct="%1.1f%%")
-    ax_sub.set_title("Sub-category Allocation")
+    ax_sub.set_title("Sub-category Allocation", fontsize=10)
     st.pyplot(fig_sub)
 else:
     st.info("Could not detect Current Value column to build sub-category allocation.")
@@ -320,7 +320,7 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table)
 
-    # Bar chart of top 10 schemes (kept as bar – easier to read many names)
+    # Bar chart of top 10 schemes
     top = alloc_table.head(10)
     fig, ax = plt.subplots()
     ax.bar(top["Scheme"], top["Allocation (%)"])
