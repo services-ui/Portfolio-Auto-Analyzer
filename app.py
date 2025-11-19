@@ -9,6 +9,18 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+# global zoom (zoom in page a bit)
+st.markdown(
+    """
+    <style>
+    html {
+        zoom: 1.10;  /* 10% zoom-in; change to 1.05 or 1.15 if you want less/more */
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # compact centered container (like earlier good version)
 st.markdown(
     """
