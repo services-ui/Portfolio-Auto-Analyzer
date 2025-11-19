@@ -9,28 +9,26 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# global zoom (zoom in page a bit more)
+# global zoom (zoom in page a bit)
 st.markdown(
     """
     <style>
     html {
-        zoom: 1.20;  /* 20% zoom-in; adjust to 1.15 or 1.25 if needed */
+        zoom: 1.10;  /* 10% zoom-in; change to 1.05 or 1.15 if you want less/more */
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# make container FULL WIDTH so tables don't look cut
+# compact centered container (like earlier good version)
 st.markdown(
     """
     <style>
     .block-container {
         padding-top: 1.2rem;
         padding-bottom: 1.2rem;
-        padding-left: 0.6rem;
-        padding-right: 0.6rem;
-        max-width: 100% !important;   /* full width to avoid table cut */
+        max-width: 960px;      /* centered, not full screen */
         margin: auto;
     }
     .stMetric {
@@ -299,9 +297,9 @@ if current_col:
 else:
     st.info("Could not detect Current Value column for sub-category allocation.")
 
-# ---------- 4. Scheme-wise Allocation (TABLE ONLY) ----------
+# ---------- 4. Scheme-wise Allocation ----------
 
-st.markdown("### 4️⃣ Scheme Allocation (Table Only)")
+st.markdown("### 4️⃣ Scheme Allocation (Top 10 by value)")
 
 if current_col and scheme_col:
     alloc = df_no_total[[scheme_col, current_col]].dropna()
@@ -318,5 +316,13 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table, use_container_width=True)
 
+    top = alloc_table.head(10)
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.bar(top["Scheme"], top["Allocation (%)"])
+    ax.set_xticklabels(top["Scheme"], rotation=45, ha="right")
+    ax.set_ylabel("Allocation (%)")
+    ax.set_title("Top 10 Schemes by Allocation")
+    fig.tight_layout()
+    st.pyplot(fig)
 else:
     st.info("Could not detect Scheme / Current Value columns for scheme allocation.")
