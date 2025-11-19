@@ -181,8 +181,7 @@ abs_ret_col = find_col_like(df.columns, ["ABSOLUTE"])
 cagr_col = find_col_like(df.columns, ["CAGR", "XIRR"])
 scheme_col = find_col_like(df.columns, ["SCHEME", "SCHEME NAME"])
 
-# NEW: sub-category / category column like "Equity: Small Cap"
-# (Look for column header containing CATEGORY, TYPE, or ASSET)
+# Sub-category / category column like "Equity: Small Cap"
 subcat_col = find_col_like(df.columns, ["CATEGORY", "SUB CATEGORY", "SUBCATEGORY", "TYPE", "ASSET"])
 
 # Clean numeric columns if present
@@ -241,17 +240,14 @@ else:
 st.write("Underlying scheme-level table (without GRAND TOTAL row):")
 st.dataframe(df_no_total.reset_index(drop=True))
 
-# ---------- 2. Category-wise Allocation (SMALL PIE) ----------
+# ---------- 2. Category-wise Allocation (table + small pie) ----------
 
 st.markdown("---")
-st.header("2️⃣ Category-wise Allocation (from Category/Sub-category column)")
+st.header("2️⃣ Category-wise Allocation")
 
 if current_col:
     cat_group_val = df_no_total.groupby("MainCategory")[current_col].sum()
-    if total_current > 0:
-        cat_group_pct = (cat_group_val / total_current * 100).round(2)
-    else:
-        cat_group_pct = cat_group_val * 0
+    cat_group_pct = (cat_group_val / total_current * 100).round(2) if total_current > 0 else 0
 
     cat_table = pd.DataFrame(
         {
@@ -261,26 +257,27 @@ if current_col:
         }
     ).sort_values("Current Value (₹)", ascending=False)
 
-    st.dataframe(cat_table)
+    col_table, col_chart = st.columns([3, 1])
 
-    fig_cat, ax_cat = plt.subplots(figsize=(4, 4))  # smaller pie
-    ax_cat.pie(cat_group_val.values, labels=cat_group_val.index.astype(str), autopct="%1.1f%%")
-    ax_cat.set_title("Category-wise Allocation", fontsize=10)
-    st.pyplot(fig_cat)
+    with col_table:
+        st.dataframe(cat_table)
+
+    with col_chart:
+        fig_cat, ax_cat = plt.subplots(figsize=(2.5, 2.5))  # small pie
+        ax_cat.pie(cat_group_val.values, labels=None, autopct="%1.1f%%")
+        ax_cat.set_title("Category\nAllocation", fontsize=10)
+        st.pyplot(fig_cat)
 else:
     st.info("Could not detect Current Value column to build category allocation.")
 
-# ---------- 3. Sub-category Allocation (SMALL PIE) ----------
+# ---------- 3. Sub-category Allocation (table + small pie) ----------
 
 st.markdown("---")
-st.header("3️⃣ Sub-category Allocation (Equity: Small Cap, etc.)")
+st.header("3️⃣ Sub-category Allocation")
 
 if current_col:
     sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
-    if total_current > 0:
-        sub_group_pct = (sub_group_val / total_current * 100).round(2)
-    else:
-        sub_group_pct = sub_group_val * 0
+    sub_group_pct = (sub_group_val / total_current * 100).round(2) if total_current > 0 else 0
 
     sub_table = pd.DataFrame(
         {
@@ -290,12 +287,16 @@ if current_col:
         }
     ).sort_values("Current Value (₹)", ascending=False)
 
-    st.dataframe(sub_table)
+    col_table, col_chart = st.columns([3, 1])
 
-    fig_sub, ax_sub = plt.subplots(figsize=(4, 4))  # smaller pie
-    ax_sub.pie(sub_group_val.values, labels=sub_group_val.index.astype(str), autopct="%1.1f%%")
-    ax_sub.set_title("Sub-category Allocation", fontsize=10)
-    st.pyplot(fig_sub)
+    with col_table:
+        st.dataframe(sub_table)
+
+    with col_chart:
+        fig_sub, ax_sub = plt.subplots(figsize=(2.3, 2.3))  # small pie
+        ax_sub.pie(sub_group_val.values, labels=None, autopct="%1.1f%%")
+        ax_sub.set_title("Sub-category\nAllocation", fontsize=10)
+        st.pyplot(fig_sub)
 else:
     st.info("Could not detect Current Value column to build sub-category allocation.")
 
@@ -320,7 +321,6 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table)
 
-    # Bar chart of top 10 schemes
     top = alloc_table.head(10)
     fig, ax = plt.subplots()
     ax.bar(top["Scheme"], top["Allocation (%)"])
