@@ -40,6 +40,7 @@ def num(series):
         .astype(float)
     )
 
+
 def find_col_like(columns, substrings):
     """Find first column whose name contains any of the given substrings (case-insensitive)."""
     cols = [str(c).upper().strip() for c in columns]
@@ -48,6 +49,7 @@ def find_col_like(columns, substrings):
             if sub in upper:
                 return orig
     return None
+
 
 def extract_client_name(df_header):
     """Look for cell starting with 'Client:' in first few rows/cols and extract the name part."""
@@ -62,6 +64,7 @@ def extract_client_name(df_header):
                     name = text
                 return name
     return "N/A"
+
 
 def extract_table(df_raw):
     """
@@ -83,6 +86,7 @@ def extract_table(df_raw):
     table.columns = header
     table = table.dropna(how="all")
     return table, first_non_empty
+
 
 def classify_from_scheme_name(name: str) -> str:
     """Fallback classification if we don't find a category column."""
@@ -117,6 +121,7 @@ def classify_from_scheme_name(name: str) -> str:
         return "Equity"
     return "Other"
 
+
 def split_main_sub(cat_text: str):
     """From 'Equity: Small Cap' return ('Equity', 'Small Cap')."""
     s = str(cat_text).strip()
@@ -133,6 +138,42 @@ def split_main_sub(cat_text: str):
     if "hybrid" in lower or "balanced" in lower:
         return "Hybrid", s
     return "Other", s
+
+
+def apply_section_subcategories(df_no_total, scheme_col):
+    """
+    For SLA-style Excel where SCHEME column has section headers like
+    'Equity: Flexi Cap' followed by schemes and 'Equity: Flexi Cap Total'.
+
+    We:
+    - detect those header rows (contain ':' and NOT 'Total')
+    - forward-fill them as SubCategory
+    - MainCategory = text before ':'
+    - drop the header rows themselves
+    """
+    if scheme_col is None:
+        return df_no_total, False
+
+    s = df_no_total[scheme_col].astype(str)
+
+    # header rows like "Equity: Flexi Cap", but not "... Total"
+    header_mask = s.str.contains(":", regex=False) & ~s.str.contains("TOTAL", case=False)
+
+    if header_mask.sum() == 0:
+        # nothing in this style, don't change anything
+        return df_no_total, False
+
+    df2 = df_no_total.copy()
+    # fill SubCategory downwards
+    df2["SubCategory"] = s.where(header_mask).ffill()
+    # MainCategory = part before ':'
+    df2["MainCategory"] = df2["SubCategory"].apply(lambda x: str(x).split(":", 1)[0].strip())
+
+    # drop the header rows themselves (they have no values)
+    df2 = df2[~header_mask].copy()
+
+    return df2, True
+
 
 # ---------- App UI ----------
 
@@ -162,38 +203,17 @@ client_name = extract_client_name(df_full)
 table, header_row = extract_table(df_full)
 df = table.copy()
 
-# ---------- Detect columns ----------
-
+# detect columns
 purchase_col = find_col_like(df.columns, ["PURCHASE VALUE", "PURCHASE OUTSTANDING", "PURCHASE"])
-current_col  = find_col_like(df.columns, ["CURRENT VALUE"])
-gain_col     = find_col_like(df.columns, ["GAIN", "REALIZED GAIN"])
-abs_ret_col  = find_col_like(df.columns, ["ABSOLUTE"])
-cagr_col     = find_col_like(df.columns, ["CAGR", "XIRR"])
-scheme_col   = find_col_like(df.columns, ["SCHEME", "SCHEME NAME"])
+current_col = find_col_like(df.columns, ["CURRENT VALUE"])
+gain_col = find_col_like(df.columns, ["GAIN", "REALIZED GAIN"])
+abs_ret_col = find_col_like(df.columns, ["ABSOLUTE"])
+cagr_col = find_col_like(df.columns, ["CAGR", "XIRR"])
+scheme_col = find_col_like(df.columns, ["SCHEME", "SCHEME NAME"])
+# we keep this but will only use as fallback
+subcat_col = find_col_like(df.columns, ["SUB CATEGORY", "SUBCATEGORY", "TYPE", "ASSET", "CATEGORY"])
 
-# NEW: detect main category vs sub-category separately
-maincat_col = None
-subcat_col  = None
-for col in df.columns:
-    name = str(col).upper()
-    if "SUB" in name and "CATEGORY" in name:
-        subcat_col = col  # e.g. "Sub Category"
-    elif "CATEGORY" in name and "SUB" not in name:
-        if maincat_col is None:       # e.g. "Category"
-            maincat_col = col
-
-# fallback (rare)
-if not subcat_col:
-    subcat_col = find_col_like(df.columns, ["SUB CATEGORY", "SUB-CATEGORY", "SUBCATEGORY"])
-if not maincat_col:
-    # use plain "CATEGORY" only if we didn't already pick a sub-category
-    for col in df.columns:
-        name = str(col).upper()
-        if "CATEGORY" in name and "SUB" not in name:
-            maincat_col = col
-            break
-
-# ---------- Clean numeric ----------
+# clean numeric
 for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
     if col is not None and df[col].dtype not in ("float64", "int64"):
         try:
@@ -201,47 +221,43 @@ for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
         except Exception:
             pass
 
-# remove GRAND TOTAL row
+# remove GRAND TOTAL / section TOTAL rows
 mask_total = df.apply(lambda r: any("TOTAL" in str(x).upper() for x in r), axis=1)
 df_no_total = df[~mask_total].copy()
 
-# ---------- Derive categories (main + sub) ----------
+# ---------- Derive categories (this is where we fix Sub-category) ----------
 
-if subcat_col is not None:
-    # Use sub-category text like 'Equity: Mid Cap'
-    main_sub = df_no_total[subcat_col].apply(split_main_sub)
-    df_no_total["MainCategory"] = main_sub.apply(lambda x: x[0])
-    df_no_total["SubCategory"]  = main_sub.apply(lambda x: x[1])
-    # If a separate main category column exists, prefer that for MainCategory
-    if maincat_col is not None:
-        df_no_total["MainCategory"] = df_no_total[maincat_col].fillna(df_no_total["MainCategory"])
-elif maincat_col is not None:
-    # Only a main 'Category' column is present
-    df_no_total["MainCategory"] = df_no_total[maincat_col].fillna("Other")
-    df_no_total["SubCategory"]  = df_no_total["MainCategory"]
-elif scheme_col is not None:
-    # No category columns; classify from scheme name
-    df_no_total["MainCategory"] = df_no_total[scheme_col].apply(classify_from_scheme_name)
-    df_no_total["SubCategory"]  = df_no_total["MainCategory"]
-else:
-    df_no_total["MainCategory"] = "Other"
-    df_no_total["SubCategory"]  = "Other"
+# 1) Try the "Equity: Mid Cap" style section headers in SCHEME
+df_no_total, used_section_style = apply_section_subcategories(df_no_total, scheme_col)
+
+if not used_section_style:
+    # 2) Fallbacks for files that actually have Category/Sub Category columns
+    if subcat_col:
+        main_sub = df_no_total[subcat_col].apply(split_main_sub)
+        df_no_total["MainCategory"] = main_sub.apply(lambda x: x[0])
+        df_no_total["SubCategory"] = main_sub.apply(lambda x: x[1])
+    elif scheme_col:
+        df_no_total["MainCategory"] = df_no_total[scheme_col].apply(classify_from_scheme_name)
+        df_no_total["SubCategory"] = df_no_total["MainCategory"]
+    else:
+        df_no_total["MainCategory"] = "Other"
+        df_no_total["SubCategory"] = "Other"
 
 # ---------- 1. Summary ----------
 
 st.markdown("### 1️⃣ Portfolio Summary")
 
 total_purchase = df_no_total[purchase_col].sum() if purchase_col else 0.0
-total_current  = df_no_total[current_col].sum() if current_col  else 0.0
-total_gain     = total_current - total_purchase if purchase_col and current_col else 0.0
+total_current = df_no_total[current_col].sum() if current_col else 0.0
+total_gain = total_current - total_purchase if purchase_col and current_col else 0.0
 
 avg_abs = df_no_total[abs_ret_col].mean() if abs_ret_col else None
 avg_cagr = df_no_total[cagr_col].mean() if cagr_col else None
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Client",        client_name)
-c2.metric("Purchase (₹)",  f"{total_purchase:,.0f}")
-c3.metric("Current (₹)",   f"{total_current:,.0f}")
+c1.metric("Client", client_name)
+c2.metric("Purchase (₹)", f"{total_purchase:,.0f}")
+c3.metric("Current (₹)", f"{total_current:,.0f}")
 
 c4, c5 = st.columns(2)
 c4.metric("Gain / Loss (₹)", f"{total_gain:,.0f}")
@@ -261,13 +277,14 @@ st.markdown("### 2️⃣ Category Allocation")
 
 if current_col:
     cat_group_val = df_no_total.groupby("MainCategory")[current_col].sum()
+    total_current = df_no_total[current_col].sum()
     cat_group_pct = (cat_group_val / total_current * 100).round(2) if total_current > 0 else 0
 
     cat_table = pd.DataFrame(
         {
-            "Category":         cat_group_val.index.astype(str),
+            "Category": cat_group_val.index.astype(str),
             "Current Value (₹)": cat_group_val.values,
-            "Allocation (%)":   cat_group_pct.values,
+            "Allocation (%)": cat_group_pct.values,
         }
     ).sort_values("Current Value (₹)", ascending=False)
 
@@ -289,13 +306,14 @@ st.markdown("### 3️⃣ Sub-category Allocation")
 
 if current_col:
     sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
+    total_current = df_no_total[current_col].sum()
     sub_group_pct = (sub_group_val / total_current * 100).round(2) if total_current > 0 else 0
 
     sub_table = pd.DataFrame(
         {
-            "Sub-Category":      sub_group_val.index.astype(str),
+            "Sub-Category": sub_group_val.index.astype(str),
             "Current Value (₹)": sub_group_val.values,
-            "Allocation (%)":    sub_group_pct.values,
+            "Allocation (%)": sub_group_pct.values,
         }
     ).sort_values("Current Value (₹)", ascending=False)
 
@@ -318,13 +336,14 @@ st.markdown("### 4️⃣ Scheme Allocation (Top 10 by value)")
 if current_col and scheme_col:
     alloc = df_no_total[[scheme_col, current_col]].dropna()
     alloc_group = alloc.groupby(scheme_col)[current_col].sum().sort_values(ascending=False)
-    alloc_pct   = (alloc_group / total_current * 100).round(2) if total_current > 0 else alloc_group * 0
+    total_current = df_no_total[current_col].sum()
+    alloc_pct = (alloc_group / total_current * 100).round(2) if total_current > 0 else alloc_group * 0
 
     alloc_table = pd.DataFrame(
         {
-            "Scheme":            alloc_group.index.astype(str),
+            "Scheme": alloc_group.index.astype(str),
             "Current Value (₹)": alloc_group.values,
-            "Allocation (%)":    alloc_pct.values,
+            "Allocation (%)": alloc_pct.values,
         }
     )
 
