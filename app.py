@@ -21,14 +21,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# compact centered container
+# make container FULL WIDTH so tables don't look cut
 st.markdown(
     """
     <style>
     .block-container {
         padding-top: 1.2rem;
         padding-bottom: 1.2rem;
-        max-width: 960px;      /* centered, not full screen */
+        padding-left: 0.6rem;
+        padding-right: 0.6rem;
+        max-width: 100% !important;   /* full width to avoid table cut */
         margin: auto;
     }
     .stMetric {
