@@ -1,24 +1,335 @@
 import streamlit as st
+import pandas as pd
+import matplotlib.pyplot as plt
 
-# Function to check if the scheme allocation is out of bounds
-def check_allocation(category, allocation):
-    if category == 'Small Cap' and allocation > 30:
-        return 'Small Cap exceeds recommended allocation (25%-30%)'
-    elif category == 'Mid Cap' and allocation > 30:
-        return 'Mid Cap exceeds recommended allocation (25%-30%)'
-    elif category == 'Large Cap' and allocation < 30:
-        return 'Large Cap allocation is below recommended range (30%-50%)'
-    elif category == 'Flexi Cap' and allocation < 30:
-        return 'Flexi Cap allocation is below recommended range (30%-50%)'
+# ---------- Page config (CENTERED, SIMPLE VIEW) ----------
+st.set_page_config(
+    page_title="Portfolio Auto Analyzer (Excel)",
+    layout="centered",
+    initial_sidebar_state="collapsed",
+)
+
+# compact centered container (like earlier good version)
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 1.2rem;
+        padding-bottom: 1.2rem;
+        max-width: 960px;      /* centered, not full screen */
+        margin: auto;
+    }
+    .stMetric {
+        padding-bottom: 0.4rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# ---------- Helper functions ----------
+
+def num(series):
+    """Convert a column to numeric if possible."""
+    return (
+        series.astype(str)
+        .str.replace(",", "", regex=False)
+        .str.replace("%", "", regex=False)
+        .str.strip()
+        .replace("", "0")
+        .astype(float)
+    )
+
+
+def find_col_like(columns, substrings):
+    """Find first column whose name contains any of the given substrings (case-insensitive)."""
+    cols = [str(c).upper().strip() for c in columns]
+    for sub in substrings:
+        for orig, upper in zip(columns, cols):
+            if sub in upper:
+                return orig
     return None
 
-# Function to check for non-Regular Growth schemes
-def check_regular_growth(scheme_name):
-    if 'Regular Growth' not in scheme_name:
-        return f"Scheme '{scheme_name}' is not Regular Growth. Consider switching to Regular Growth."
-    return None
 
-# ---------- 4. Scheme-wise Allocation with Suggestion Box ----------
+def extract_client_name(df_header):
+    """Look for cell starting with 'Client:' in first few rows/cols and extract the name part."""
+    for r in range(min(10, df_header.shape[0])):
+        for c in range(min(5, df_header.shape[1])):
+            val = str(df_header.iat[r, c])
+            if val.startswith("Client:"):
+                text = val.replace("Client:", "").strip()
+                if "(" in text:  # remove PAN in brackets if present
+                    name = text.split("(")[0].strip()
+                else:
+                    name = text
+                return name
+    return "N/A"
+
+
+def extract_table(df_raw):
+    """
+    From a headerless sheet (header=None), find the row where first cell is
+    'SCHEME NAME' or 'SCHEME', treat that as header, and return (table_df, header_row_index).
+    """
+    for idx in range(df_raw.shape[0]):
+        first_cell = str(df_raw.iat[idx, 0]).strip().upper()
+        if first_cell in ("SCHEME NAME", "SCHEME"):
+            header = df_raw.iloc[idx]
+            table = df_raw.iloc[idx + 1 :].copy()
+            table.columns = header
+            table = table.dropna(how="all")  # drop fully empty rows
+            return table, idx
+    # Fallback: first non-empty row
+    first_non_empty = df_raw.dropna(how="all").index[0]
+    header = df_raw.iloc[first_non_empty]
+    table = df_raw.iloc[first_non_empty + 1 :].copy()
+    table.columns = header
+    table = table.dropna(how="all")
+    return table, first_non_empty
+
+
+def classify_from_scheme_name(name: str) -> str:
+    """Fallback classification if we don't find a category column."""
+    s = str(name).lower()
+
+    if "liquid" in s or "overnight" in s or "money market" in s:
+        return "Liquid"
+    if any(k in s for k in ["gilt", "debt", "bond", "income", "credit risk", "corporate bond"]):
+        return "Debt"
+    if "hybrid" in s or "balanced" in s or "aggressive hybrid" in s:
+        return "Hybrid"
+    if any(
+        k in s
+        for k in [
+            "equity",
+            "flexi",
+            "flexicap",
+            "multi cap",
+            "multicap",
+            "mid cap",
+            "midcap",
+            "small cap",
+            "smallcap",
+            "large cap",
+            "largecap",
+            "index",
+            "elss",
+            "focused",
+            "value fund",
+        ]
+    ):
+        return "Equity"
+    return "Other"
+
+
+def split_main_sub(cat_text: str):
+    """From 'Equity: Small Cap' return ('Equity', 'Small Cap')."""
+    s = str(cat_text).strip()
+    if ":" in s:
+        main, sub = s.split(":", 1)
+        return main.strip(), sub.strip()
+    lower = s.lower()
+    if "equity" in lower:
+        return "Equity", s
+    if "debt" in lower or "bond" in lower or "gilt" in lower:
+        return "Debt", s
+    if "liquid" in lower or "overnight" in lower or "money market" in lower:
+        return "Liquid", s
+    if "hybrid" in lower or "balanced" in lower:
+        return "Hybrid", s
+    return "Other", s
+
+
+def apply_section_subcategories(df_no_total, scheme_col):
+    """
+    For SLA-style Excel where SCHEME column has section headers like
+    'Equity: Flexi Cap' followed by schemes and 'Equity: Flexi Cap Total'.
+
+    We:
+    - detect those header rows (contain ':' and NOT 'Total')
+    - forward-fill them as SubCategory
+    - MainCategory = text before ':'
+    - drop the header rows themselves
+    """
+    if scheme_col is None:
+        return df_no_total, False
+
+    s = df_no_total[scheme_col].astype(str)
+
+    # header rows like "Equity: Flexi Cap", but not "... Total"
+    header_mask = s.str.contains(":", regex=False) & ~s.str.contains("TOTAL", case=False)
+
+    if header_mask.sum() == 0:
+        # nothing in this style, don't change anything
+        return df_no_total, False
+
+    df2 = df_no_total.copy()
+    # fill SubCategory downwards
+    df2["SubCategory"] = s.where(header_mask).ffill()
+    # MainCategory = part before ':'
+    df2["MainCategory"] = df2["SubCategory"].apply(lambda x: str(x).split(":", 1)[0].strip())
+
+    # drop the header rows themselves (they have no values)
+    df2 = df2[~header_mask].copy()
+
+    return df2, True
+
+
+# ---------- App UI ----------
+
+st.title("📊 Portfolio Auto Analyzer")
+
+uploaded = st.file_uploader("Upload portfolio Excel (SLA / Investwell)", type=["xlsx", "xls"])
+
+if not uploaded:
+    st.info("Upload the Valuation / Summary Excel file to begin.")
+    st.stop()
+
+# Read first sheet without header
+try:
+    df_full = pd.read_excel(uploaded, sheet_name=0, header=None)
+except Exception as e:
+    st.error(f"Could not read Excel file: {e}")
+    st.stop()
+
+if df_full.empty:
+    st.error("The first sheet seems to be empty.")
+    st.stop()
+
+with st.expander("Preview raw sheet (first 30 rows)", expanded=False):
+    st.dataframe(df_full.head(30))
+
+client_name = extract_client_name(df_full)
+table, header_row = extract_table(df_full)
+df = table.copy()
+
+# detect columns
+purchase_col = find_col_like(df.columns, ["PURCHASE VALUE", "PURCHASE OUTSTANDING", "PURCHASE"])
+current_col = find_col_like(df.columns, ["CURRENT VALUE"])
+gain_col = find_col_like(df.columns, ["GAIN", "REALIZED GAIN"])
+abs_ret_col = find_col_like(df.columns, ["ABSOLUTE"])
+cagr_col = find_col_like(df.columns, ["CAGR", "XIRR"])
+scheme_col = find_col_like(df.columns, ["SCHEME", "SCHEME NAME"])
+# we keep this but will only use as fallback
+subcat_col = find_col_like(df.columns, ["SUB CATEGORY", "SUBCATEGORY", "TYPE", "ASSET", "CATEGORY"])
+
+# clean numeric
+for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
+    if col is not None and df[col].dtype not in ("float64", "int64"):
+        try:
+            df[col] = num(df[col])
+        except Exception:
+            pass
+
+# remove GRAND TOTAL / section TOTAL rows
+mask_total = df.apply(lambda r: any("TOTAL" in str(x).upper() for x in r), axis=1)
+df_no_total = df[~mask_total].copy()
+
+# ---------- Derive categories (this is where we fix Sub-category) ----------
+
+# 1) Try the "Equity: Mid Cap" style section headers in SCHEME
+df_no_total, used_section_style = apply_section_subcategories(df_no_total, scheme_col)
+
+if not used_section_style:
+    # 2) Fallbacks for files that actually have Category/Sub Category columns
+    if subcat_col:
+        main_sub = df_no_total[subcat_col].apply(split_main_sub)
+        df_no_total["MainCategory"] = main_sub.apply(lambda x: x[0])
+        df_no_total["SubCategory"] = main_sub.apply(lambda x: x[1])
+    elif scheme_col:
+        df_no_total["MainCategory"] = df_no_total[scheme_col].apply(classify_from_scheme_name)
+        df_no_total["SubCategory"] = df_no_total["MainCategory"]
+    else:
+        df_no_total["MainCategory"] = "Other"
+        df_no_total["SubCategory"] = "Other"
+
+# ---------- 1. Summary ----------
+
+st.markdown("### 1️⃣ Portfolio Summary")
+
+total_purchase = df_no_total[purchase_col].sum() if purchase_col else 0.0
+total_current = df_no_total[current_col].sum() if current_col else 0.0
+total_gain = total_current - total_purchase if purchase_col and current_col else 0.0
+
+avg_abs = df_no_total[abs_ret_col].mean() if abs_ret_col else None
+avg_cagr = df_no_total[cagr_col].mean() if cagr_col else None
+
+c1, c2, c3 = st.columns(3)
+c1.metric("Client", client_name)
+c2.metric("Purchase (₹)", f"{total_purchase:,.0f}")
+c3.metric("Current (₹)", f"{total_current:,.0f}")
+
+c4, c5 = st.columns(2)
+c4.metric("Gain / Loss (₹)", f"{total_gain:,.0f}")
+if avg_abs is not None:
+    c5.metric("Avg. Abs Return (%)", f"{avg_abs:.2f}")
+elif avg_cagr is not None:
+    c5.metric("Avg. CAGR / XIRR (%)", f"{avg_cagr:.2f}")
+else:
+    c5.metric("Avg. Return", "N/A")
+
+with st.expander("Scheme-level table", expanded=False):
+    st.dataframe(df_no_total.reset_index(drop=True))
+
+# ---------- 2. Category-wise Allocation ----------
+
+st.markdown("### 2️⃣ Category Allocation")
+
+if current_col:
+    cat_group_val = df_no_total.groupby("MainCategory")[current_col].sum()
+    total_current = df_no_total[current_col].sum()
+    cat_group_pct = (cat_group_val / total_current * 100).round(2) if total_current > 0 else 0
+
+    cat_table = pd.DataFrame(
+        {
+            "Category": cat_group_val.index.astype(str),
+            "Current Value (₹)": cat_group_val.values,
+            "Allocation (%)": cat_group_pct.values,
+        }
+    ).sort_values("Current Value (₹)", ascending=False)
+
+    col_table, col_chart = st.columns([3, 1])
+    with col_table:
+        st.dataframe(cat_table, use_container_width=True)
+
+    with col_chart:
+        fig_cat, ax_cat = plt.subplots(figsize=(2.4, 2.4))
+        ax_cat.pie(cat_group_val.values, labels=None, autopct="%1.1f%%")
+        ax_cat.set_title("Category\nAllocation", fontsize=9)
+        st.pyplot(fig_cat)
+else:
+    st.info("Could not detect Current Value column for category allocation.")
+
+# ---------- 3. Sub-category Allocation ----------
+
+st.markdown("### 3️⃣ Sub-category Allocation")
+
+if current_col:
+    sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
+    total_current = df_no_total[current_col].sum()
+    sub_group_pct = (sub_group_val / total_current * 100).round(2) if total_current > 0 else 0
+
+    sub_table = pd.DataFrame(
+        {
+            "Sub-Category": sub_group_val.index.astype(str),
+            "Current Value (₹)": sub_group_val.values,
+            "Allocation (%)": sub_group_pct.values,
+        }
+    ).sort_values("Current Value (₹)", ascending=False)
+
+    col_table, col_chart = st.columns([3, 1])
+    with col_table:
+        st.dataframe(sub_table, use_container_width=True)
+
+    with col_chart:
+        fig_sub, ax_sub = plt.subplots(figsize=(2.3, 2.3))
+        ax_sub.pie(sub_group_val.values, labels=None, autopct="%1.1f%%")
+        ax_sub.set_title("Sub-category\nAllocation", fontsize=9)
+        st.pyplot(fig_sub)
+else:
+    st.info("Could not detect Current Value column for sub-category allocation.")
+
+# ---------- 4. Scheme-wise Allocation ----------
 
 st.markdown("### 4️⃣ Scheme Allocation (Top 10 by value)")
 
@@ -38,7 +349,6 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table, use_container_width=True)
 
-    # Top 10 schemes for visualization
     top = alloc_table.head(10)
     fig, ax = plt.subplots(figsize=(6, 3))
     ax.bar(top["Scheme"], top["Allocation (%)"])
@@ -47,32 +357,5 @@ if current_col and scheme_col:
     ax.set_title("Top 10 Schemes by Allocation")
     fig.tight_layout()
     st.pyplot(fig)
-
-    # -------------- Suggestion Box --------------
-    st.markdown("### 💡 Suggestions")
-
-    suggestions = []
-    
-    # Check each scheme's allocation for criteria violation
-    for idx, row in alloc_table.iterrows():
-        category = row["Scheme"]
-        allocation = row["Allocation (%)"]
-        
-        allocation_warning = check_allocation(category, allocation)
-        if allocation_warning:
-            suggestions.append(allocation_warning)
-        
-        # Check if it's a Regular Growth scheme
-        regular_growth_warning = check_regular_growth(category)
-        if regular_growth_warning:
-            suggestions.append(regular_growth_warning)
-    
-    # Show suggestions (highlighting violations in red)
-    if suggestions:
-        for suggestion in suggestions:
-            st.markdown(f"<p style='color:red'>{suggestion}</p>", unsafe_allow_html=True)
-    else:
-        st.markdown("<p style='color:green'>No issues detected with scheme allocations.</p>", unsafe_allow_html=True)
-
 else:
     st.info("Could not detect Scheme / Current Value columns for scheme allocation.")
