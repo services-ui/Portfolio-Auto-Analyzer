@@ -2,22 +2,23 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# ---------- Page config (COMPACT CENTERED LAYOUT) ----------
+# ---------- Page config (COMPACT, FULL-WIDTH CONTAINER) ----------
 st.set_page_config(
     page_title="Portfolio Auto Analyzer (Excel)",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
 
-# compact page style
+# compact, full-width container
 st.markdown(
     """
     <style>
     .block-container {
-        padding-top: 1.2rem;
-        padding-bottom: 1.2rem;
-        max-width: 960px;
-        margin: auto;
+        padding-top: 1rem !important;
+        padding-bottom: 1rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        max-width: 100% !important;   /* use full width, no big side gaps */
     }
     .stMetric {
         padding-bottom: 0.4rem;
