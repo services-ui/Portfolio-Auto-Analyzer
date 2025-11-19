@@ -297,9 +297,9 @@ if current_col:
 else:
     st.info("Could not detect Current Value column for sub-category allocation.")
 
-# ---------- 4. Scheme-wise Allocation ----------
+# ---------- 4. Scheme-wise Allocation (TABLE ONLY) ----------
 
-st.markdown("### 4️⃣ Scheme Allocation (Top 10 by value)")
+st.markdown("### 4️⃣ Scheme Allocation (Table Only)")
 
 if current_col and scheme_col:
     alloc = df_no_total[[scheme_col, current_col]].dropna()
@@ -316,13 +316,5 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table, use_container_width=True)
 
-    top = alloc_table.head(10)
-    fig, ax = plt.subplots(figsize=(6, 3))
-    ax.bar(top["Scheme"], top["Allocation (%)"])
-    ax.set_xticklabels(top["Scheme"], rotation=45, ha="right")
-    ax.set_ylabel("Allocation (%)")
-    ax.set_title("Top 10 Schemes by Allocation")
-    fig.tight_layout()
-    st.pyplot(fig)
 else:
     st.info("Could not detect Scheme / Current Value columns for scheme allocation.")
