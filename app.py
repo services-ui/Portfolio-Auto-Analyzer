@@ -74,8 +74,7 @@ def extract_table(df_raw):
 
 def classify_from_scheme_name(name: str) -> str:
     """
-    Classify category (Equity / Debt / Liquid / Hybrid / Other)
-    based ONLY on text in scheme name column.
+    Fallback classification if we don't find a category column.
     """
     s = str(name).lower()
 
@@ -117,10 +116,32 @@ def classify_from_scheme_name(name: str) -> str:
     return "Other"
 
 
+def split_main_sub(cat_text: str):
+    """
+    From text like 'Equity: Small Cap' or 'Debt: Short Duration',
+    return (main_category, sub_category).
+    """
+    s = str(cat_text).strip()
+    if ":" in s:
+        main, sub = s.split(":", 1)
+        return main.strip(), sub.strip()
+    # If no colon, try to infer
+    lower = s.lower()
+    if "equity" in lower:
+        return "Equity", s
+    if "debt" in lower or "bond" in lower or "gilt" in lower:
+        return "Debt", s
+    if "liquid" in lower or "overnight" in lower or "money market" in lower:
+        return "Liquid", s
+    if "hybrid" in lower or "balanced" in lower:
+        return "Hybrid", s
+    return "Other", s
+
+
 # ---------- UI ----------
 
-st.title("📊 Portfolio Auto Analyzer (Excel – Scheme Level)")
-st.write("Upload your **Valuation / Summary Excel** from SLA / Investwell (the ones you showed).")
+st.title("📊 Portfolio Auto Analyzer (Excel – Category & Sub-category)")
+st.write("Upload your **Valuation / Summary Excel** from SLA / Investwell (same format as before).")
 
 uploaded = st.file_uploader("Upload Excel", type=["xlsx", "xls"])
 
@@ -160,9 +181,13 @@ abs_ret_col = find_col_like(df.columns, ["ABSOLUTE"])
 cagr_col = find_col_like(df.columns, ["CAGR", "XIRR"])
 scheme_col = find_col_like(df.columns, ["SCHEME", "SCHEME NAME"])
 
+# NEW: sub-category / category column like "Equity: Small Cap"
+# (Look for column header containing CATEGORY, TYPE, or ASSET)
+subcat_col = find_col_like(df.columns, ["CATEGORY", "SUB CATEGORY", "SUBCATEGORY", "TYPE", "ASSET"])
+
 # Clean numeric columns if present
 for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
-    if col is not None:
+    if col is not None and df[col].dtype != "float64" and df[col].dtype != "int64":
         try:
             df[col] = num(df[col])
         except Exception:
@@ -172,6 +197,20 @@ for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
 mask_total = df.apply(lambda r: any("TOTAL" in str(x).upper() for x in r), axis=1)
 df_no_total = df[~mask_total].copy()
 
+# ---------- Derive MainCategory & SubCategory ----------
+
+if subcat_col:
+    # Use the explicit column in Excel, like "Equity: Small Cap"
+    main_sub = df_no_total[subcat_col].apply(split_main_sub)
+    df_no_total["MainCategory"] = main_sub.apply(lambda x: x[0])
+    df_no_total["SubCategory"] = main_sub.apply(lambda x: x[1])
+elif scheme_col:
+    # Fallback – derive from scheme name only
+    df_no_total["MainCategory"] = df_no_total[scheme_col].apply(classify_from_scheme_name)
+    df_no_total["SubCategory"] = df_no_total["MainCategory"]
+else:
+    df_no_total["MainCategory"] = "Other"
+    df_no_total["SubCategory"] = "Other"
 
 # ---------- 1. Portfolio Summary ----------
 
@@ -202,17 +241,13 @@ else:
 st.write("Underlying scheme-level table (without GRAND TOTAL row):")
 st.dataframe(df_no_total.reset_index(drop=True))
 
-
-# ---------- 2. Category-wise amount from Scheme Name ----------
+# ---------- 2. Category-wise Allocation (PIE) ----------
 
 st.markdown("---")
-st.header("2️⃣ Category-wise Amount (from Scheme Name)")
+st.header("2️⃣ Category-wise Allocation (from Category/Sub-category column)")
 
-if scheme_col and current_col:
-    cat_df = df_no_total[[scheme_col, current_col]].dropna(subset=[scheme_col])
-    cat_df["Category"] = cat_df[scheme_col].apply(classify_from_scheme_name)
-
-    cat_group_val = cat_df.groupby("Category")[current_col].sum()
+if current_col:
+    cat_group_val = df_no_total.groupby("MainCategory")[current_col].sum()
     if total_current > 0:
         cat_group_pct = (cat_group_val / total_current * 100).round(2)
     else:
@@ -229,20 +264,45 @@ if scheme_col and current_col:
     st.dataframe(cat_table)
 
     fig_cat, ax_cat = plt.subplots()
-    ax_cat.bar(cat_table["Category"], cat_table["Current Value (₹)"])
-    ax_cat.set_xticklabels(cat_table["Category"], rotation=45, ha="right")
-    ax_cat.set_ylabel("Current Value (₹)")
-    ax_cat.set_title("Category-wise Amount (from Scheme Name)")
+    ax_cat.pie(cat_group_val.values, labels=cat_group_val.index.astype(str), autopct="%1.1f%%")
+    ax_cat.set_title("Category-wise Allocation")
     st.pyplot(fig_cat)
-
 else:
-    st.info("Could not detect Scheme / Current Value columns to build category-wise allocation.")
+    st.info("Could not detect Current Value column to build category allocation.")
 
-
-# ---------- 3. Scheme-wise Allocation ----------
+# ---------- 3. Sub-category Allocation (PIE) ----------
 
 st.markdown("---")
-st.header("3️⃣ Scheme-wise Allocation (by Current Value)")
+st.header("3️⃣ Sub-category Allocation (Equity: Small Cap, etc.)")
+
+if current_col:
+    sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
+    if total_current > 0:
+        sub_group_pct = (sub_group_val / total_current * 100).round(2)
+    else:
+        sub_group_pct = sub_group_val * 0
+
+    sub_table = pd.DataFrame(
+        {
+            "Sub-Category": sub_group_val.index.astype(str),
+            "Current Value (₹)": sub_group_val.values,
+            "Allocation (%)": sub_group_pct.values,
+        }
+    ).sort_values("Current Value (₹)", ascending=False)
+
+    st.dataframe(sub_table)
+
+    fig_sub, ax_sub = plt.subplots()
+    ax_sub.pie(sub_group_val.values, labels=sub_group_val.index.astype(str), autopct="%1.1f%%")
+    ax_sub.set_title("Sub-category Allocation")
+    st.pyplot(fig_sub)
+else:
+    st.info("Could not detect Current Value column to build sub-category allocation.")
+
+# ---------- 4. Scheme-wise Allocation (bar for Top 10) ----------
+
+st.markdown("---")
+st.header("4️⃣ Scheme-wise Allocation (by Current Value)")
 
 if current_col and scheme_col:
     alloc = df_no_total[[scheme_col, current_col]].dropna()
@@ -260,7 +320,7 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table)
 
-    # Bar chart of top 10 schemes
+    # Bar chart of top 10 schemes (kept as bar – easier to read many names)
     top = alloc_table.head(10)
     fig, ax = plt.subplots()
     ax.bar(top["Scheme"], top["Allocation (%)"])
@@ -269,4 +329,4 @@ if current_col and scheme_col:
     ax.set_title("Top Schemes by Allocation (Current Value)")
     st.pyplot(fig)
 else:
-    st.info("Could not detect Scheme / Current Value columns to build allocation chart.")
+    st.info("Could not detect Scheme / Current Value columns to build scheme-wise allocation.")
