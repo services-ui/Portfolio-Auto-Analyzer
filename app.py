@@ -137,6 +137,13 @@ def apply_section_subcategories(df_no_total, scheme_col):
     return df2, True
 
 
+def format_inr(x):
+    try:
+        return f"₹{x:,.0f}"
+    except:
+        return f"{x}"
+
+
 # ---------------------- APP UI ----------------------
 
 st.title("📊 Portfolio Auto Analyzer")
@@ -364,9 +371,10 @@ else:
     actual_pct = actual_pct_series.to_dict()
 
     suggestions = []
-    over_list = {}   # cat -> (low, high, actual_pct, value_rupee, excess_pct, excess_amount_rupee)
-    under_list = {}  # cat -> (low, high, actual_pct, value_rupee, shortage_pct, shortage_amount_rupee)
+    over_list = {}   # cat -> dict with keys: low, high, actual, value, excess_pct, excess_amount_rupee
+    under_list = {}  # cat -> dict with keys: low, high, actual, value, shortage_pct, shortage_amount_rupee
 
+    # Build initial over/under dictionaries using the agreed formulas:
     for cat, (low, high) in ideal_ranges.items():
         actual = float(actual_pct.get(cat, 0.0))
         value = float(sub_group_val.get(cat, 0.0))
@@ -382,7 +390,14 @@ else:
             # register as under-allocated using rupee shortage for reaching the lower bound
             shortage_pct = low - 0.0
             shortage_amount = total_current_value * shortage_pct / 100
-            under_list[cat] = (low, high, actual, value, shortage_pct, shortage_amount)
+            under_list[cat] = {
+                "low": low,
+                "high": high,
+                "actual": actual,
+                "value": value,
+                "shortage_pct": shortage_pct,
+                "shortage_amt": shortage_amount,
+            }
             continue
 
         # In Range
@@ -396,62 +411,99 @@ else:
 
         # Over-allocated
         elif actual > high:
-            excess_pct = actual - high  # e.g., 34.18 - 30 = 4.18 (percentage points)
-            excess_amount = total_current_value * excess_pct / 100  # rupee amount to bring down to max
+            excess_pct = actual - high  # percentage points above max
+            # IMPORTANT: as per your requirement, excess rupee = excess_pct * category_value (NOT percent of total)
+            excess_amount = value * excess_pct / 100.0
             msg = f"""
             <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
             🔴 <b>{cat}</b> allocation is high ({actual:.2f}% > {high}%).<br>
-            Excess: <b>{excess_pct:.2f}%</b> (₹{excess_amount:,.0f})
+            Excess: <b>{excess_pct:.2f}%</b> (₹{excess_amount:,.0f}) — this is {excess_pct:.2f}% of the parked amount in {cat}.
             </div>
             """
             suggestions.append(msg)
-            over_list[cat] = (low, high, actual, value, excess_pct, excess_amount)
+            over_list[cat] = {
+                "low": low,
+                "high": high,
+                "actual": actual,
+                "value": value,
+                "excess_pct": excess_pct,
+                "excess_amt": excess_amount,
+            }
 
         # Under-allocated
         else:
             shortage_pct = low - actual  # percentage points needed to reach lower bound
-            shortage_amount = total_current_value * shortage_pct / 100
+            shortage_amount = total_current_value * shortage_pct / 100.0
             msg = f"""
             <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
             🔴 <b>{cat}</b> allocation is low ({actual:.2f}% < {low}%).<br>
-            Shortage: <b>{shortage_pct:.2f}%</b> (₹{shortage_amount:,.0f})
+            Shortage: <b>{shortage_pct:.2f}%</b> (₹{shortage_amount:,.0f}) — needs {shortage_pct:.2f}% of the portfolio.
             </div>
             """
             suggestions.append(msg)
-            under_list[cat] = (low, high, actual, value, shortage_pct, shortage_amount)
+            under_list[cat] = {
+                "low": low,
+                "high": high,
+                "actual": actual,
+                "value": value,
+                "shortage_pct": shortage_pct,
+                "shortage_amt": shortage_amount,
+            }
 
-    # ---------- Shifting logic: shift only the rupee amount that corresponds to the % excess ----------
+    # ---------- Shifting logic: distribute excess_amt (from category value) into shortages ----------
+    shifts = []  # list of dicts {from, to, amount}
+
+    # Convert to lists sorted by largest amounts
+    over_items = sorted(over_list.items(), key=lambda x: x[1]["excess_amt"], reverse=True)
+    under_items = sorted(under_list.items(), key=lambda x: x[1]["shortage_amt"], reverse=True)
+
+    # Make mutable copies of amounts
+    under_remaining = {k: v["shortage_amt"] for k, v in under_items}
+    over_remaining = {k: v["excess_amt"] for k, v in over_items}
+
+    # For each over-allocated category (largest first), fill largest shortage first
+    for over_cat, over_data in over_items:
+        available = over_remaining.get(over_cat, 0.0)
+        if available <= 0:
+            continue
+
+        # iterate shortages sorted by remaining shortage descending
+        # we'll re-sort the under categories each iteration to ensure we always pick the current largest shortage
+        while available > 0 and any(v > 0 for v in under_remaining.values()):
+            # pick current largest shortage
+            best_under = max(under_remaining.items(), key=lambda x: x[1])
+            best_under_cat, best_under_amt = best_under
+            if best_under_amt <= 0:
+                break
+
+            shift_amt = min(available, best_under_amt)
+            shift_amt = max(0.0, shift_amt)
+
+            if shift_amt <= 0:
+                break
+
+            # record shift
+            shifts.append({
+                "from": over_cat,
+                "to": best_under_cat,
+                "amount": shift_amt
+            })
+
+            # reduce amounts
+            available -= shift_amt
+            over_remaining[over_cat] = available
+            under_remaining[best_under_cat] = under_remaining[best_under_cat] - shift_amt
+
+    # Build shift_box HTML
     shift_box = ""
-    if over_list and under_list:
-        # for each over-allocated category, try to find the best under-allocated category and propose a shift
-        for over_cat, over_data in over_list.items():
-            over_low, over_high, over_actual, over_value, over_excess_pct, over_excess_amount = over_data
-            # rupee amount that should be moved out of the over-allocated category to bring it to the max
-            rupee_to_move_from_over = over_excess_amount  # already computed as percent * total_current_value
-
-            # pick the under-allocated category with the largest rupee shortage
-            under_sorted = sorted(
-                under_list.items(),
-                key=lambda x: x[1][5],  # sort by shortage_amount rupee
-                reverse=True,
-            )
-            best_under_cat, under_data = under_sorted[0]
-            under_low, under_high, under_actual, under_value, under_shortage_pct, under_shortage_amount = under_data
-
-            # shift only up to the lesser of:
-            #  - rupee_to_move_from_over (amount required to bring over_cat down to its max)
-            #  - under_shortage_amount (amount required to bring under_cat up to its min)
-            shift_amount = min(rupee_to_move_from_over, under_shortage_amount)
-
-            # safety non-negative
-            shift_amount = max(0.0, shift_amount)
-
-            # format a clearer message including percentage points and rupee amount
+    if shifts:
+        # group shifts per from->to nicely (optional)
+        for s in shifts:
+            pct_of_portfolio = (s["amount"] / total_current_value) * 100 if total_current_value > 0 else 0
             shift_box += f"""
             <div style='background:#e8f0ff;padding:10px;border-left:5px solid #0057e7;margin-bottom:8px;'>
             🔄 <b>Suggested Shift:</b><br>
-            Shift <b>₹{shift_amount:,.0f}</b> (≈ { (shift_amount / total_current_value * 100):.2f}% of portfolio) 
-            from <b>{over_cat}</b> (reduce by {over_excess_pct:.2f}%) to <b>{best_under_cat}</b> (raise by {under_shortage_pct:.2f}%).
+            Shift <b>{format_inr(s['amount'])}</b> (≈ {pct_of_portfolio:.2f}% of portfolio) from <b>{s['from']}</b> to <b>{s['to']}</b>.
             </div>
             """
 
