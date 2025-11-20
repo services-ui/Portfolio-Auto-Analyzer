@@ -9,7 +9,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# UI compact layout
+# Styling
 st.markdown(
     """
     <style>
@@ -27,7 +27,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # ---------- Helper functions ----------
+
 def num(series):
     return (
         series.astype(str)
@@ -38,6 +40,7 @@ def num(series):
         .astype(float)
     )
 
+
 def find_col_like(columns, substrings):
     cols = [str(c).upper().strip() for c in columns]
     for sub in substrings:
@@ -45,6 +48,7 @@ def find_col_like(columns, substrings):
             if sub in upper:
                 return orig
     return None
+
 
 def extract_client_name(df_header):
     for r in range(min(10, df_header.shape[0])):
@@ -59,51 +63,66 @@ def extract_client_name(df_header):
                 return name
     return "N/A"
 
+
 def extract_table(df_raw):
     for idx in range(df_raw.shape[0]):
         first_cell = str(df_raw.iat[idx, 0]).strip().upper()
         if first_cell in ("SCHEME NAME", "SCHEME"):
             header = df_raw.iloc[idx]
-            table = df_raw.iloc[idx+1:].copy()
+            table = df_raw.iloc[idx + 1 :].copy()
             table.columns = header
             table = table.dropna(how="all")
             return table, idx
 
     first_non_empty = df_raw.dropna(how="all").index[0]
     header = df_raw.iloc[first_non_empty]
-    table = df_raw.iloc[first_non_empty + 1:].copy()
+    table = df_raw.iloc[first_non_empty + 1 :].copy()
     table.columns = header
+    table = table.dropna(how="all")
     return table, first_non_empty
+
 
 def classify_from_scheme_name(name: str) -> str:
     s = str(name).lower()
-
     if "liquid" in s or "overnight" in s or "money market" in s:
         return "Liquid"
-    if any(k in s for k in ["gilt", "debt", "bond", "income", "credit"]):
+    if any(k in s for k in ["gilt", "debt", "bond", "income", "credit risk", "corporate bond"]):
         return "Debt"
-    if "hybrid" in s or "balanced" in s:
+    if "hybrid" in s or "balanced" in s or "aggressive hybrid" in s:
         return "Hybrid"
-    if any(k in s for k in [
-        "equity", "flexi", "multi", "mid", "small", "large", "index", "elss", "focused"
-    ]):
+    if any(
+        k in s
+        for k in [
+            "equity", "flexi", "flexicap", "multi cap", "multicap", "mid cap",
+            "midcap", "small cap", "smallcap", "large cap", "largecap",
+            "index", "elss", "focused", "value fund"
+        ]
+    ):
         return "Equity"
     return "Other"
+
 
 def split_main_sub(cat_text: str):
     s = str(cat_text).strip()
     if ":" in s:
         main, sub = s.split(":", 1)
         return main.strip(), sub.strip()
-
     lower = s.lower()
-    if "equity" in lower: return "Equity", s
-    if "debt" in lower: return "Debt", s
-    if "liquid" in lower: return "Liquid", s
-    if "hybrid" in lower: return "Hybrid", s
+    if "equity" in lower:
+        return "Equity", s
+    if "debt" in lower or "bond" in lower or "gilt" in lower:
+        return "Debt", s
+    if "liquid" in lower or "overnight" in lower or "money market" in lower:
+        return "Liquid", s
+    if "hybrid" in lower or "balanced" in lower:
+        return "Hybrid", s
     return "Other", s
 
+
 def apply_section_subcategories(df_no_total, scheme_col):
+    if scheme_col is None:
+        return df_no_total, False
+
     s = df_no_total[scheme_col].astype(str)
     header_mask = s.str.contains(":", regex=False) & ~s.str.contains("TOTAL", case=False)
 
@@ -117,151 +136,292 @@ def apply_section_subcategories(df_no_total, scheme_col):
 
     return df2, True
 
-# ---------- App Main UI ----------
+
+# ---------------------- APP UI ----------------------
+
 st.title("📊 Portfolio Auto Analyzer")
 
-uploaded = st.file_uploader("Upload portfolio Excel", type=["xlsx", "xls"])
+uploaded = st.file_uploader("Upload portfolio Excel (SLA / Investwell)", type=["xlsx", "xls"])
 
 if not uploaded:
+    st.info("Upload the Valuation / Summary Excel file to begin.")
     st.stop()
 
-# Read Excel
-df_full = pd.read_excel(uploaded, sheet_name=0, header=None)
+try:
+    df_full = pd.read_excel(uploaded, sheet_name=0, header=None)
+except Exception as e:
+    st.error(f"Could not read Excel file: {e}")
+    st.stop()
+
+if df_full.empty:
+    st.error("The first sheet seems empty.")
+    st.stop()
+
+with st.expander("Preview raw sheet (first 30 rows)", expanded=False):
+    st.dataframe(df_full.head(30))
+
 client_name = extract_client_name(df_full)
 table, header_row = extract_table(df_full)
 df = table.copy()
 
-# Find columns
-purchase_col = find_col_like(df.columns, ["PURCHASE"])
-current_col  = find_col_like(df.columns, ["CURRENT VALUE"])
-abs_ret_col  = find_col_like(df.columns, ["ABSOLUTE"])
-cagr_col     = find_col_like(df.columns, ["CAGR", "XIRR"])
-scheme_col   = find_col_like(df.columns, ["SCHEME"])
-subcat_col   = find_col_like(df.columns, ["CATEGORY", "SUB CATEGORY"])
-amc_col      = find_col_like(df.columns, ["AMC", "FUND HOUSE", "FUND"])
+# detect columns
+purchase_col = find_col_like(df.columns, ["PURCHASE VALUE", "PURCHASE OUTSTANDING", "PURCHASE"])
+current_col = find_col_like(df.columns, ["CURRENT VALUE"])
+gain_col = find_col_like(df.columns, ["GAIN", "REALIZED GAIN"])
+abs_ret_col = find_col_like(df.columns, ["ABSOLUTE"])
+cagr_col = find_col_like(df.columns, ["CAGR", "XIRR"])
+scheme_col = find_col_like(df.columns, ["SCHEME", "SCHEME NAME"])
+subcat_col = find_col_like(df.columns, ["SUB CATEGORY", "SUBCATEGORY", "TYPE", "ASSET", "CATEGORY"])
 
-# Clean numeric
-for col in [purchase_col, current_col, abs_ret_col, cagr_col]:
-    if col:
-        df[col] = num(df[col])
+# clean numeric
+for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
+    if col is not None:
+        try:
+            df[col] = num(df[col])
+        except:
+            pass
 
-# Remove "GRAND TOTAL"
-mask_total = df.apply(lambda r: "TOTAL" in str(r).upper(), axis=1)
+# remove TOTAL rows
+mask_total = df.apply(lambda r: any("TOTAL" in str(x).upper() for x in r), axis=1)
 df_no_total = df[~mask_total].copy()
 
-# Category & Sub-category
+# derive categories
 df_no_total, used_section_style = apply_section_subcategories(df_no_total, scheme_col)
 
-# ---------- 1. Summary ----------
+if not used_section_style:
+    if subcat_col:
+        main_sub = df_no_total[subcat_col].apply(split_main_sub)
+        df_no_total["MainCategory"] = main_sub.apply(lambda x: x[0])
+        df_no_total["SubCategory"] = main_sub.apply(lambda x: x[1])
+    elif scheme_col:
+        df_no_total["MainCategory"] = df_no_total[scheme_col].apply(classify_from_scheme_name)
+        df_no_total["SubCategory"] = df_no_total["MainCategory"]
+    else:
+        df_no_total["MainCategory"] = "Other"
+        df_no_total["SubCategory"] = "Other"
+
+
+# ------------------------------------------------------
+# 1. Summary
+# ------------------------------------------------------
 st.markdown("### 1️⃣ Portfolio Summary")
 
-total_purchase = df_no_total[purchase_col].sum()
-total_current = df_no_total[current_col].sum()
+total_purchase = df_no_total[purchase_col].sum() if purchase_col else 0.0
+total_current = df_no_total[current_col].sum() if current_col else 0.0
 total_gain = total_current - total_purchase
+
+avg_abs = df_no_total[abs_ret_col].mean() if abs_ret_col else None
+avg_cagr = df_no_total[cagr_col].mean() if cagr_col else None
 
 c1, c2, c3 = st.columns(3)
 c1.metric("Client", client_name)
 c2.metric("Purchase (₹)", f"{total_purchase:,.0f}")
 c3.metric("Current (₹)", f"{total_current:,.0f}")
 
-# ---------- 2. Category Allocation ----------
+c4, c5 = st.columns(2)
+c4.metric("Gain / Loss (₹)", f"{total_gain:,.0f}")
+if avg_abs is not None:
+    c5.metric("Avg. Abs Return (%)", f"{avg_abs:.2f}")
+elif avg_cagr is not None:
+    c5.metric("Avg. CAGR / XIRR (%)", f"{avg_cagr:.2f}")
+else:
+    c5.metric("Avg. Return", "N/A")
+
+with st.expander("Scheme-level table", expanded=False):
+    st.dataframe(df_no_total.reset_index(drop=True))
+
+
+# ------------------------------------------------------
+# 2. Category Allocation
+# ------------------------------------------------------
 st.markdown("### 2️⃣ Category Allocation")
 
-cat_group_val = df_no_total.groupby("MainCategory")[current_col].sum()
-cat_group_pct = cat_group_val / total_current * 100
+if current_col:
+    cat_group_val = df_no_total.groupby("MainCategory")[current_col].sum()
+    total_current = df_no_total[current_col].sum()
+    cat_group_pct = (cat_group_val / total_current * 100).round(2)
 
-col_table, col_chart = st.columns([3, 1])
-col_table.dataframe(
-    pd.DataFrame({
+    cat_table = pd.DataFrame({
         "Category": cat_group_val.index,
         "Current Value (₹)": cat_group_val.values,
-        "Allocation (%)": cat_group_pct.round(2).values,
-    })
-)
+        "Allocation (%)": cat_group_pct.values,
+    }).sort_values("Current Value (₹)", ascending=False)
 
-fig1, ax1 = plt.subplots(figsize=(2.3, 2.3))
-ax1.pie(cat_group_val.values, autopct="%1.1f%%")
-col_chart.pyplot(fig1)
+    col_table, col_chart = st.columns([3, 1])
+    with col_table:
+        st.dataframe(cat_table, use_container_width=True)
 
-# ---------- 3. Sub-category Allocation ----------
+    with col_chart:
+        fig, ax = plt.subplots(figsize=(2.4, 2.4))
+        ax.pie(cat_group_val.values, autopct="%1.1f%%")
+        ax.set_title("Category\nAllocation", fontsize=9)
+        st.pyplot(fig)
+
+
+# ------------------------------------------------------
+# 3. Sub-category Allocation
+# ------------------------------------------------------
 st.markdown("### 3️⃣ Sub-category Allocation")
 
-sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
-sub_group_pct = sub_group_val / total_current * 100
+if current_col:
+    sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
+    total_current = df_no_total[current_col].sum()
+    sub_group_pct = (sub_group_val / total_current * 100).round(2)
 
-col_table, col_chart = st.columns([3, 1])
-col_table.dataframe(
-    pd.DataFrame({
+    sub_table = pd.DataFrame({
         "Sub-Category": sub_group_val.index,
         "Current Value (₹)": sub_group_val.values,
-        "Allocation (%)": sub_group_pct.round(2).values,
+        "Allocation (%)": sub_group_pct.values,
+    }).sort_values("Current Value (₹)", ascending=False)
+
+    col_table, col_chart = st.columns([3, 1])
+    with col_table:
+        st.dataframe(sub_table, use_container_width=True)
+
+    with col_chart:
+        fig, ax = plt.subplots(figsize=(2.3, 2.3))
+        ax.pie(sub_group_val.values, autopct="%1.1f%%")
+        ax.set_title("Sub-category\nAllocation", fontsize=9)
+        st.pyplot(fig)
+
+
+# ------------------------------------------------------
+# 4. Scheme Allocation
+# ------------------------------------------------------
+st.markdown("### 4️⃣ Scheme Allocation (Top 10 by value)")
+
+if current_col and scheme_col:
+    alloc = df_no_total[[scheme_col, current_col]].dropna()
+    alloc_group = alloc.groupby(scheme_col)[current_col].sum().sort_values(ascending=False)
+    total_current = df_no_total[current_col].sum()
+    alloc_pct = (alloc_group / total_current * 100).round(2)
+
+    alloc_table = pd.DataFrame({
+        "Scheme": alloc_group.index,
+        "Current Value (₹)": alloc_group.values,
+        "Allocation (%)": alloc_pct.values,
     })
-)
 
-fig2, ax2 = plt.subplots(figsize=(2.3, 2.3))
-ax2.pie(sub_group_val.values, autopct="%1.1f%%")
-col_chart.pyplot(fig2)
+    st.dataframe(alloc_table, use_container_width=True)
 
-# ---------- 4. Scheme Allocation ----------
-st.markdown("### 4️⃣ Scheme Allocation (Top 10)")
+    top = alloc_table.head(10)
+    fig, ax = plt.subplots(figsize=(6, 3))
+    ax.bar(top["Scheme"], top["Allocation (%)"])
+    ax.set_xticklabels(top["Scheme"], rotation=45, ha="right")
+    ax.set_ylabel("Allocation (%)")
+    ax.set_title("Top 10 Schemes by Allocation")
+    fig.tight_layout()
+    st.pyplot(fig)
 
-alloc = df_no_total.groupby(scheme_col)[current_col].sum().sort_values(ascending=False)
-st.dataframe(
-    pd.DataFrame({
-        "Scheme": alloc.index,
-        "Current Value (₹)": alloc.values,
-        "Allocation (%)": (alloc / total_current * 100).round(2).values,
-    })
-)
 
-# ---------- 5. Suggestions ----------
-st.markdown("### 5️⃣ Smart Suggestions 🔍")
+# ------------------------------------------------------
+# 5. Suggestion Box (NEW SECTION)
+# ------------------------------------------------------
+st.markdown("### 5️⃣ Suggestion Box")
 
-suggestions = []
-
-# ---- A. Sub-category Ideal Allocation Check ----
-ideal_ranges = {
-    "Small Cap": (25, 30),
-    "Mid Cap": (25, 30),
-    "Large Cap": (30, 50),
-    "Flexi Cap": (30, 50),
-}
-
-for subcat, pct in sub_group_pct.items():
-    if subcat in ideal_ranges:
-        low, high = ideal_ranges[subcat]
-
-        if pct < low:
-            suggestions.append(f"🔸 **{subcat} is UNDER-allocated** ({pct:.2f}%). Ideal: {low}-{high}%")
-        elif pct > high:
-            suggestions.append(f"🔴 **{subcat} is OVER-allocated** ({pct:.2f}%). Ideal: {low}-{high}%")
-        else:
-            suggestions.append(f"🟢 {subcat} is within ideal range ({pct:.2f}%).")
-
-# ---- B. AMC Exposure > 20% ----
-if amc_col:
-    amc_group = df_no_total.groupby(amc_col)[current_col].sum()
-    amc_pct = amc_group / total_current * 100
-
-    for amc, pct in amc_pct.items():
-        if pct > 20:
-            suggestions.append(f"🔴 **High AMC Exposure:** {amc} = {pct:.2f}% (>20%)")
-
-# ---- C. Non 'Regular Growth' Schemes ----
-bad_schemes = []
-for s in df_no_total[scheme_col]:
-    name = str(s).lower()
-    if not ("regular" in name and "growth" in name):
-        bad_schemes.append(s)
-
-if bad_schemes:
-    suggestions.append(
-        f"🔴 **Non Regular-Growth Schemes Found:** {', '.join(bad_schemes[:10])}..."
-    )
-
-# Display suggestions
-if suggestions:
-    for s in suggestions:
-        st.markdown(f"- {s}")
+if not current_col:
+    st.warning("Cannot generate suggestions because Current Value column is missing.")
 else:
-    st.success("All allocations are healthy ✔")
+    ideal_ranges = {
+        "Small Cap": (25, 30),
+        "Mid Cap": (25, 30),
+        "Large Cap": (30, 50),
+        "Flexi Cap": (30, 50),
+    }
+
+    sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
+    total_current_value = df_no_total[current_col].sum()
+
+    actual_pct = (sub_group_val / total_current_value * 100).to_dict()
+
+    suggestions = []
+    over_list = {}
+    under_list = {}
+
+    for cat, (low, high) in ideal_ranges.items():
+        actual = actual_pct.get(cat, 0)
+        value = sub_group_val.get(cat, 0)
+
+        # Missing category = 0%
+        if cat not in actual_pct:
+            msg = f"""
+            <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
+            🔴 <b>{cat}</b> allocation is <b>0%</b>. Ideal: <b>{low}% – {high}%</b>
+            </div>
+            """
+            suggestions.append(msg)
+            under_list[cat] = (low, high, actual, value, low, total_current_value * low / 100)
+            continue
+
+        # Correct range
+        if low <= actual <= high:
+            msg = f"""
+            <div style='background:#ddffdd;padding:10px;border-left:5px solid green;margin-bottom:8px;'>
+            🟢 <b>{cat}</b> allocation is correct ({actual:.2f}%). Range: <b>{low}% – {high}%</b>
+            </div>
+            """
+            suggestions.append(msg)
+
+        # Over-allocated
+        elif actual > high:
+            excess_pct = actual - high
+            excess_amount = total_current_value * excess_pct / 100
+            msg = f"""
+            <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
+            🔴 <b>{cat}</b> allocation is high ({actual:.2f}% > {high}%).<br>
+            Ideal: <b>{low}% – {high}%</b><br>
+            Excess Amount: <b>₹{excess_amount:,.0f}</b>
+            </div>
+            """
+            suggestions.append(msg)
+            over_list[cat] = (low, high, actual, value, excess_pct, excess_amount)
+
+        # Under-allocated
+        else:
+            shortage_pct = low - actual
+            shortage_amount = total_current_value * shortage_pct / 100
+            msg = f"""
+            <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
+            🔴 <b>{cat}</b> allocation is low ({actual:.2f}% < {low}%).<br>
+            Ideal: <b>{low}% – {high}%</b><br>
+            Shortage Amount: <b>₹{shortage_amount:,.0f}</b>
+            </div>
+            """
+            suggestions.append(msg)
+            under_list[cat] = (low, high, actual, value, shortage_pct, shortage_amount)
+
+    shift_box = ""
+
+    for over_cat, (_, high, actual, value, excess_pct, excess_amount) in over_list.items():
+
+        if under_list:
+            under_sorted = sorted(
+                under_list.items(),
+                key=lambda x: x[1][5],
+                reverse=True,
+            )
+            best_cat, under_data = under_sorted[0]
+            shortage_amount = under_data[5]
+
+            shift_amount = min(excess_amount, shortage_amount)
+
+            shift_box += f"""
+            <div style='background:#e8f0ff;padding:10px;border-left:5px solid #0057e7;margin-bottom:8px;'>
+            🔄 <b>Suggested Shift:</b><br>
+            Shift <b>₹{shift_amount:,.0f}</b> from <b>{over_cat}</b> to <b>{best_cat}</b>.
+            </div>
+            """
+
+    # Display
+    for s in suggestions:
+        st.markdown(s, unsafe_allow_html=True)
+
+    if shift_box:
+        st.markdown("#### 🔄 Allocation Shifting Recommendations")
+        st.markdown(shift_box, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style='background:#ddffdd;padding:10px;border-left:5px solid green;margin-top:8px;'>
+        ✅ No shifting required. All category allocations are balanced.
+        </div>
+        """, unsafe_allow_html=True)
