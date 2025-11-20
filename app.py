@@ -347,6 +347,55 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table, use_container_width=True)
 
+# ------------------------------------------------------
+# 5a. Allocation Analysis Table
+# ------------------------------------------------------
+st.markdown("### 5️⃣a Allocation Analysis Table")
+
+ideal_ranges = {
+    "Small Cap": (25, 30),
+    "Mid Cap": (25, 30),
+    "Large Cap": (30, 50),
+    "Flexi Cap": (30, 50),
+}
+
+sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
+total_current_value = df_no_total[current_col].sum()
+actual_pct_series = (sub_group_val / total_current_value * 100).round(2)
+
+rows = []
+
+for cat, (low, high) in ideal_ranges.items():
+    actual_val = float(sub_group_val.get(cat, 0.0))
+    actual_pct = float(actual_pct_series.get(cat, 0.0))
+
+    if actual_pct == 0:
+        short_pct = low
+        short_amt = total_current_value * short_pct / 100
+        suggestion = "Increase Allocation"
+        rows.append([cat, actual_val, actual_pct, f"{low}% - {high}%", f"Short {short_pct:.2f}%", short_amt, suggestion])
+        continue
+
+    if low <= actual_pct <= high:
+        rows.append([cat, actual_val, actual_pct, f"{low}% - {high}%", "OK", 0, "No Action"])
+    elif actual_pct > high:
+        excess_pct = actual_pct - high
+        excess_amt = actual_val * excess_pct / 100
+        rows.append([cat, actual_val, actual_pct, f"{low}% - {high}%", f"Excess {excess_pct:.2f}%", excess_amt, "Reduce Allocation"])
+    else:
+        short_pct = low - actual_pct
+        short_amt = total_current_value * short_pct / 100
+        rows.append([cat, actual_val, actual_pct, f"{low}% - {high}%", f"Short {short_pct:.2f}%", short_amt, "Increase Allocation"])
+
+alloc_table_df = pd.DataFrame(
+    rows,
+    columns=[
+        "Category", "Actual Value (₹)", "Actual %", "Ideal Range",
+        "Short / Excess %", "Short / Excess Amt (₹)", "Suggestion"
+    ],
+)
+
+st.dataframe(alloc_table_df, use_container_width=True)
 
 # ------------------------------------------------------
 # 5. Suggestion Box (FIXED shift-calculation)
