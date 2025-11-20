@@ -396,67 +396,68 @@ alloc_table_df = pd.DataFrame(
 )
 
 st.dataframe(alloc_table_df, use_container_width=True)
-/*******************************************************
- * SECTION 5 — SCHEME VALIDATION (IDCW / DIRECT / DIVIDEND)
- *******************************************************/
 
-// List of keywords that indicate problems
-const invalidTerms = [
-  "IDCW",
-  "Dividend",
-  "Direct",
-  "Payout",
-  "Pay Out",
-  "Reinvestment",
-  "Regular "  // Note: includes space to avoid matching "Reg (G)"
-];
+# ------------------------------------------------------
+# 5. Scheme Validation (IDCW / DIRECT / DIVIDEND)
+# ------------------------------------------------------
 
-// Function to check scheme name for invalid patterns
-function checkSchemeValidity(schemeName) {
-  // If schemeName already contains "Reg (G)" → safe
-  if (schemeName.includes("Reg (G)")) return null;
+# keywords to flag (case-insensitive)
+invalid_terms = ["idcw", "dividend", "direct", "payout", "pay out", "reinvestment", "regular"]
 
-  // Scan for problematic terms
-  for (let term of invalidTerms) {
-    if (schemeName.toLowerCase().includes(term.toLowerCase())) {
-      return term; // return first matched term
-    }
-  }
-  return null;
-}
+scheme_warnings = []
 
-// Build warning messages for all schemes
-let schemeWarnings = [];
+if scheme_col:
+    # iterate through scheme names found in the sheet
+    for scheme in df_no_total[scheme_col].astype(str):
+        s = scheme.strip()
+        s_lower = s.lower()
 
-schemeData.forEach((row, index) => {
-  const schemeName = row["Scheme Name"];
+        # If explicitly contains Reg (G) or variations, consider it OK
+        # check common variations in lowercase
+        if "reg (g)" in s_lower or "reg(g)" in s_lower or "reg g" in s_lower:
+            continue
 
-  let foundIssue = checkSchemeValidity(schemeName);
+        # check each invalid term; for "regular" we want to flag unless it's part of "reg (g)"
+        flagged = False
+        for term in invalid_terms:
+            if term in s_lower:
+                # skip if term is 'regular' but it's actually the 'reg (g)' pattern (already checked above)
+                scheme_warnings.append({
+                    "scheme": s,
+                    "term": term
+                })
+                flagged = True
+                break
 
-  if (foundIssue) {
-    schemeWarnings.push(
-      `⚠️ <span style="color:red; font-weight:bold">"${schemeName}" contains "${foundIssue}" — Please verify the plan.</span>`
-    );
-  }
-});
+# Display Scheme Validation results
+st.markdown("### 5️⃣ Scheme Validation")
 
-// FINAL OUTPUT FOR SUGGESTION BOX
-let validationOutput = "";
-
-if (schemeWarnings.length === 0) {
-  validationOutput = `
-    <div style="padding:10px; background:#e6ffe6; border-left:5px solid #00b300;">
-      ✅ <b>All schemes are correctly tagged as Reg (G). No issues found.</b>
-    </div>
-  `;
-} else {
-  validationOutput = `
-    <div style="padding:10px; background:#ffe6e6; border-left:5px solid red;">
-      <b>🚨 Scheme Validation Issues Found:</b><br><br>
-      ${schemeWarnings.join("<br>")}
-    </div>
-  `;
-}
-
-// Insert into the Suggestion Box element
-document.getElementById("suggestionBox").innerHTML = validationOutput;
+if not scheme_col:
+    st.info("Scheme name column not detected; skipping scheme validation.")
+else:
+    if not scheme_warnings:
+        st.markdown(
+            """
+            <div style='padding:10px;background:#e6ffe6;border-left:5px solid #00b300;'>
+            ✅ <b>All schemes appear to be correctly tagged as Reg (G) or do not contain flagged terms.</b>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            """
+            <div style='padding:8px;'><b>🚨 Scheme Plan Issues Found</b></div>
+            """,
+            unsafe_allow_html=True
+        )
+        for w in scheme_warnings:
+            term_display = w["term"].upper()
+            st.markdown(
+                f"""
+                <div style='background:#ffe6e6;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
+                🔴 <b>{w['scheme']}</b> — contains <b>{term_display}</b>. Please verify (recommended format: <b>Reg (G)</b>).
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
