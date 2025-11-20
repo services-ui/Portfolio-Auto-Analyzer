@@ -103,6 +103,20 @@ def split_main_sub(cat_text: str):
     if "hybrid" in lower: return "Hybrid", s
     return "Other", s
 
+def apply_section_subcategories(df_no_total, scheme_col):
+    s = df_no_total[scheme_col].astype(str)
+    header_mask = s.str.contains(":", regex=False) & ~s.str.contains("TOTAL", case=False)
+
+    if header_mask.sum() == 0:
+        return df_no_total, False
+
+    df2 = df_no_total.copy()
+    df2["SubCategory"] = s.where(header_mask).ffill()
+    df2["MainCategory"] = df2["SubCategory"].apply(lambda x: str(x).split(":", 1)[0].strip())
+    df2 = df2[~header_mask].copy()
+
+    return df2, True
+
 # ---------- App Main UI ----------
 st.title("📊 Portfolio Auto Analyzer")
 
@@ -136,13 +150,7 @@ mask_total = df.apply(lambda r: "TOTAL" in str(r).upper(), axis=1)
 df_no_total = df[~mask_total].copy()
 
 # Category & Sub-category
-if subcat_col:
-    main_sub = df_no_total[subcat_col].apply(split_main_sub)
-    df_no_total["MainCategory"] = main_sub.apply(lambda x: x[0])
-    df_no_total["SubCategory"] = main_sub.apply(lambda x: x[1])
-elif scheme_col:
-    df_no_total["MainCategory"] = df_no_total[scheme_col].apply(classify_from_scheme_name)
-    df_no_total["SubCategory"] = df_no_total["MainCategory"]
+df_no_total, used_section_style = apply_section_subcategories(df_no_total, scheme_col)
 
 # ---------- 1. Summary ----------
 st.markdown("### 1️⃣ Portfolio Summary")
@@ -257,4 +265,3 @@ if suggestions:
         st.markdown(f"- {s}")
 else:
     st.success("All allocations are healthy ✔")
-
