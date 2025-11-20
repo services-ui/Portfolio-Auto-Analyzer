@@ -397,178 +397,67 @@ alloc_table_df = pd.DataFrame(
 
 st.dataframe(alloc_table_df, use_container_width=True)
 
-# ------------------------------------------------------
-# 5. Suggestion Box (FIXED shift-calculation)
-# ------------------------------------------------------
-st.markdown("### 5️⃣ Suggestion Box")
+/*******************************************************
+ * SECTION 5 — SCHEME VALIDATION (IDCW / DIRECT / DIVIDEND)
+ *******************************************************/
 
-if not current_col:
-    st.warning("Cannot generate suggestions because Current Value column is missing.")
-else:
-    ideal_ranges = {
-        "Small Cap": (25, 30),
-        "Mid Cap": (25, 30),
-        "Large Cap": (30, 50),
-        "Flexi Cap": (30, 50),
+// List of keywords that indicate problems
+const invalidTerms = [
+  "IDCW",
+  "Dividend",
+  "Direct",
+  "Payout",
+  "Pay Out",
+  "Reinvestment",
+  "Regular "  // Note: includes space to avoid matching "Reg (G)"
+];
+
+// Function to check scheme name for invalid patterns
+function checkSchemeValidity(schemeName) {
+  // If schemeName already contains "Reg (G)" → safe
+  if (schemeName.includes("Reg (G)")) return null;
+
+  // Scan for problematic terms
+  for (let term of invalidTerms) {
+    if (schemeName.toLowerCase().includes(term.toLowerCase())) {
+      return term; // return first matched term
     }
+  }
+  return null;
+}
 
-    sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
-    total_current_value = df_no_total[current_col].sum()
+// Build warning messages for all schemes
+let schemeWarnings = [];
 
-    # actual % allocation per subcategory (as numeric %)
-    actual_pct_series = (sub_group_val / total_current_value * 100).round(2)
-    actual_pct = actual_pct_series.to_dict()
+schemeData.forEach((row, index) => {
+  const schemeName = row["Scheme Name"];
 
-    suggestions = []
-    over_list = {}   # cat -> dict with keys: low, high, actual, value, excess_pct, excess_amount_rupee
-    under_list = {}  # cat -> dict with keys: low, high, actual, value, shortage_pct, shortage_amount_rupee
+  let foundIssue = checkSchemeValidity(schemeName);
 
-    # Build initial over/under dictionaries using the agreed formulas:
-    for cat, (low, high) in ideal_ranges.items():
-        actual = float(actual_pct.get(cat, 0.0))
-        value = float(sub_group_val.get(cat, 0.0))
+  if (foundIssue) {
+    schemeWarnings.push(
+      `⚠️ <span style="color:red; font-weight:bold">"${schemeName}" contains "${foundIssue}" — Please verify the plan.</span>`
+    );
+  }
+});
 
-        # Missing category = 0%
-        if cat not in actual_pct:
-            msg = f"""
-            <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
-            🔴 <b>{cat}</b> allocation is <b>0%</b>. Ideal: <b>{low}% – {high}%</b>
-            </div>
-            """
-            suggestions.append(msg)
-            # register as under-allocated using rupee shortage for reaching the lower bound
-            shortage_pct = low - 0.0
-            shortage_amount = total_current_value * shortage_pct / 100
-            under_list[cat] = {
-                "low": low,
-                "high": high,
-                "actual": actual,
-                "value": value,
-                "shortage_pct": shortage_pct,
-                "shortage_amt": shortage_amount,
-            }
-            continue
+// FINAL OUTPUT FOR SUGGESTION BOX
+let validationOutput = "";
 
-        # In Range
-        if low <= actual <= high:
-            msg = f"""
-            <div style='background:#ddffdd;padding:10px;border-left:5px solid green;margin-bottom:8px;'>
-            🟢 <b>{cat}</b> allocation is correct ({actual:.2f}%). Range: <b>{low}% – {high}%</b>
-            </div>
-            """
-            suggestions.append(msg)
+if (schemeWarnings.length === 0) {
+  validationOutput = `
+    <div style="padding:10px; background:#e6ffe6; border-left:5px solid #00b300;">
+      ✅ <b>All schemes are correctly tagged as Reg (G). No issues found.</b>
+    </div>
+  `;
+} else {
+  validationOutput = `
+    <div style="padding:10px; background:#ffe6e6; border-left:5px solid red;">
+      <b>🚨 Scheme Validation Issues Found:</b><br><br>
+      ${schemeWarnings.join("<br>")}
+    </div>
+  `;
+}
 
-        # Over-allocated
-        elif actual > high:
-            excess_pct = actual - high  # percentage points above max
-            # IMPORTANT: as per your requirement, excess rupee = excess_pct * category_value (NOT percent of total)
-            excess_amount = value * excess_pct / 100.0
-            msg = f"""
-            <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
-            🔴 <b>{cat}</b> allocation is high ({actual:.2f}% > {high}%).<br>
-            Excess: <b>{excess_pct:.2f}%</b> (₹{excess_amount:,.0f}) — this is {excess_pct:.2f}% of the parked amount in {cat}.
-            </div>
-            """
-            suggestions.append(msg)
-            over_list[cat] = {
-                "low": low,
-                "high": high,
-                "actual": actual,
-                "value": value,
-                "excess_pct": excess_pct,
-                "excess_amt": excess_amount,
-            }
-
-        # Under-allocated
-        else:
-            shortage_pct = low - actual  # percentage points needed to reach lower bound
-            shortage_amount = total_current_value * shortage_pct / 100.0
-            msg = f"""
-            <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
-            🔴 <b>{cat}</b> allocation is low ({actual:.2f}% < {low}%).<br>
-            Shortage: <b>{shortage_pct:.2f}%</b> (₹{shortage_amount:,.0f}) — needs {shortage_pct:.2f}% of the portfolio.
-            </div>
-            """
-            suggestions.append(msg)
-            under_list[cat] = {
-                "low": low,
-                "high": high,
-                "actual": actual,
-                "value": value,
-                "shortage_pct": shortage_pct,
-                "shortage_amt": shortage_amount,
-            }
-
-    # ---------- Shifting logic: distribute excess_amt (from category value) into shortages ----------
-    shifts = []  # list of dicts {from, to, amount}
-
-    # Convert to lists sorted by largest amounts
-    over_items = sorted(over_list.items(), key=lambda x: x[1]["excess_amt"], reverse=True)
-    under_items = sorted(under_list.items(), key=lambda x: x[1]["shortage_amt"], reverse=True)
-
-    # Make mutable copies of amounts
-    under_remaining = {k: v["shortage_amt"] for k, v in under_items}
-    over_remaining = {k: v["excess_amt"] for k, v in over_items}
-
-    # For each over-allocated category (largest first), fill largest shortage first
-    for over_cat, over_data in over_items:
-        available = over_remaining.get(over_cat, 0.0)
-        if available <= 0:
-            continue
-
-        # iterate shortages sorted by remaining shortage descending
-        # we'll re-sort the under categories each iteration to ensure we always pick the current largest shortage
-        while available > 0 and any(v > 0 for v in under_remaining.values()):
-            # pick current largest shortage
-            best_under = max(under_remaining.items(), key=lambda x: x[1])
-            best_under_cat, best_under_amt = best_under
-            if best_under_amt <= 0:
-                break
-
-            shift_amt = min(available, best_under_amt)
-            shift_amt = max(0.0, shift_amt)
-
-            if shift_amt <= 0:
-                break
-
-            # record shift
-            shifts.append({
-                "from": over_cat,
-                "to": best_under_cat,
-                "amount": shift_amt
-            })
-
-            # reduce amounts
-            available -= shift_amt
-            over_remaining[over_cat] = available
-            under_remaining[best_under_cat] = under_remaining[best_under_cat] - shift_amt
-
-    # Build shift_box HTML
-    shift_box = ""
-    if shifts:
-        # group shifts per from->to nicely (optional)
-        for s in shifts:
-            pct_of_portfolio = (s["amount"] / total_current_value) * 100 if total_current_value > 0 else 0
-            shift_box += f"""
-            <div style='background:#e8f0ff;padding:10px;border-left:5px solid #0057e7;margin-bottom:8px;'>
-            🔄 <b>Suggested Shift:</b><br>
-            Shift <b>{format_inr(s['amount'])}</b> (≈ {pct_of_portfolio:.2f}% of portfolio) from <b>{s['from']}</b> to <b>{s['to']}</b>.
-            </div>
-            """
-
-    # Display suggestions
-    for s in suggestions:
-        st.markdown(s, unsafe_allow_html=True)
-
-    if shift_box:
-        st.markdown("#### 🔄 Allocation Shifting Recommendations")
-        st.markdown(shift_box, unsafe_allow_html=True)
-    else:
-        st.markdown(
-            """
-        <div style='background:#ddffdd;padding:10px;border-left:5px solid green;margin-top:8px;'>
-        ✅ No shifting required. All category allocations are balanced.
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
+// Insert into the Suggestion Box element
+document.getElementById("suggestionBox").innerHTML = validationOutput;
