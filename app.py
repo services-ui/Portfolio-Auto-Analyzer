@@ -396,7 +396,6 @@ alloc_table_df = pd.DataFrame(
 )
 
 st.dataframe(alloc_table_df, use_container_width=True)
-
 /*******************************************************
  * SECTION 5 — SCHEME VALIDATION (IDCW / DIRECT / DIVIDEND)
  *******************************************************/
