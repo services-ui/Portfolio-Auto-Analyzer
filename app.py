@@ -69,14 +69,14 @@ def extract_table(df_raw):
         first_cell = str(df_raw.iat[idx, 0]).strip().upper()
         if first_cell in ("SCHEME NAME", "SCHEME"):
             header = df_raw.iloc[idx]
-            table = df_raw.iloc[idx + 1:].copy()
+            table = df_raw.iloc[idx + 1 :].copy()
             table.columns = header
             table = table.dropna(how="all")
             return table, idx
 
     first_non_empty = df_raw.dropna(how="all").index[0]
     header = df_raw.iloc[first_non_empty]
-    table = df_raw.iloc[first_non_empty + 1:].copy()
+    table = df_raw.iloc[first_non_empty + 1 :].copy()
     table.columns = header
     table = table.dropna(how="all")
     return table, first_non_empty
@@ -208,16 +208,23 @@ if not used_section_style:
 normalize_map = {
     "smallcap": "Small Cap",
     "small cap": "Small Cap",
+    "small-cap": "Small Cap",
+    "small cap fund": "Small Cap",
 
     "midcap": "Mid Cap",
     "mid cap": "Mid Cap",
+    "mid-cap": "Mid Cap",
 
     "largecap": "Large Cap",
     "large cap": "Large Cap",
+    "large-cap": "Large Cap",
 
     "flexicap": "Flexi Cap",
     "flexi cap": "Flexi Cap",
+    "flexi-cap": "Flexi Cap",
+    "flexi": "Flexi Cap",
 }
+
 
 def normalize_subcat(x):
     s = str(x).lower().strip()
@@ -225,6 +232,7 @@ def normalize_subcat(x):
         if key in s:
             return val
     return x  # fallback
+
 
 df_no_total["SubCategory"] = df_no_total["SubCategory"].apply(normalize_subcat)
 
@@ -334,7 +342,7 @@ if current_col and scheme_col:
 
 
 # ------------------------------------------------------
-# 5. Suggestion Box (FIXED)
+# 5. Suggestion Box (FIXED shift-calculation)
 # ------------------------------------------------------
 st.markdown("### 5️⃣ Suggestion Box")
 
@@ -351,15 +359,17 @@ else:
     sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
     total_current_value = df_no_total[current_col].sum()
 
-    actual_pct = (sub_group_val / total_current_value * 100).to_dict()
+    # actual % allocation per subcategory (as numeric %)
+    actual_pct_series = (sub_group_val / total_current_value * 100).round(2)
+    actual_pct = actual_pct_series.to_dict()
 
     suggestions = []
-    over_list = {}
-    under_list = {}
+    over_list = {}   # cat -> (low, high, actual_pct, value_rupee, excess_pct, excess_amount_rupee)
+    under_list = {}  # cat -> (low, high, actual_pct, value_rupee, shortage_pct, shortage_amount_rupee)
 
     for cat, (low, high) in ideal_ranges.items():
-        actual = actual_pct.get(cat, 0)
-        value = sub_group_val.get(cat, 0)
+        actual = float(actual_pct.get(cat, 0.0))
+        value = float(sub_group_val.get(cat, 0.0))
 
         # Missing category = 0%
         if cat not in actual_pct:
@@ -369,7 +379,10 @@ else:
             </div>
             """
             suggestions.append(msg)
-            under_list[cat] = (low, high, actual, value, low, total_current_value * low / 100)
+            # register as under-allocated using rupee shortage for reaching the lower bound
+            shortage_pct = low - 0.0
+            shortage_amount = total_current_value * shortage_pct / 100
+            under_list[cat] = (low, high, actual, value, shortage_pct, shortage_amount)
             continue
 
         # In Range
@@ -381,55 +394,68 @@ else:
             """
             suggestions.append(msg)
 
-        # Over
+        # Over-allocated
         elif actual > high:
-            excess_pct = actual - high
-            excess_amount = total_current_value * excess_pct / 100
+            excess_pct = actual - high  # e.g., 34.18 - 30 = 4.18 (percentage points)
+            excess_amount = total_current_value * excess_pct / 100  # rupee amount to bring down to max
             msg = f"""
             <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
             🔴 <b>{cat}</b> allocation is high ({actual:.2f}% > {high}%).<br>
-            Excess Amount: <b>₹{excess_amount:,.0f}</b>
+            Excess: <b>{excess_pct:.2f}%</b> (₹{excess_amount:,.0f})
             </div>
             """
             suggestions.append(msg)
             over_list[cat] = (low, high, actual, value, excess_pct, excess_amount)
 
-        # Under
+        # Under-allocated
         else:
-            shortage_pct = low - actual
+            shortage_pct = low - actual  # percentage points needed to reach lower bound
             shortage_amount = total_current_value * shortage_pct / 100
             msg = f"""
             <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
             🔴 <b>{cat}</b> allocation is low ({actual:.2f}% < {low}%).<br>
-            Shortage Amount: <b>₹{shortage_amount:,.0f}</b>
+            Shortage: <b>{shortage_pct:.2f}%</b> (₹{shortage_amount:,.0f})
             </div>
             """
             suggestions.append(msg)
             under_list[cat] = (low, high, actual, value, shortage_pct, shortage_amount)
 
+    # ---------- Shifting logic: shift only the rupee amount that corresponds to the % excess ----------
     shift_box = ""
+    if over_list and under_list:
+        # for each over-allocated category, try to find the best under-allocated category and propose a shift
+        for over_cat, over_data in over_list.items():
+            over_low, over_high, over_actual, over_value, over_excess_pct, over_excess_amount = over_data
+            # rupee amount that should be moved out of the over-allocated category to bring it to the max
+            rupee_to_move_from_over = over_excess_amount  # already computed as percent * total_current_value
 
-    for over_cat, (_, high, actual, value, excess_pct, excess_amount) in over_list.items():
-
-        if under_list:
+            # pick the under-allocated category with the largest rupee shortage
             under_sorted = sorted(
                 under_list.items(),
-                key=lambda x: x[1][5],
+                key=lambda x: x[1][5],  # sort by shortage_amount rupee
                 reverse=True,
             )
-            best_cat, under_data = under_sorted[0]
-            shortage_amount = under_data[5]
+            best_under_cat, under_data = under_sorted[0]
+            under_low, under_high, under_actual, under_value, under_shortage_pct, under_shortage_amount = under_data
 
-            shift_amount = min(excess_amount, shortage_amount)
+            # shift only up to the lesser of:
+            #  - rupee_to_move_from_over (amount required to bring over_cat down to its max)
+            #  - under_shortage_amount (amount required to bring under_cat up to its min)
+            shift_amount = min(rupee_to_move_from_over, under_shortage_amount)
 
+            # safety non-negative
+            shift_amount = max(0.0, shift_amount)
+
+            # format a clearer message including percentage points and rupee amount
             shift_box += f"""
             <div style='background:#e8f0ff;padding:10px;border-left:5px solid #0057e7;margin-bottom:8px;'>
             🔄 <b>Suggested Shift:</b><br>
-            Shift <b>₹{shift_amount:,.0f}</b> from <b>{over_cat}</b> to <b>{best_cat}</b>.
+            Shift <b>₹{shift_amount:,.0f}</b> (≈ { (shift_amount / total_current_value * 100):.2f}% of portfolio) 
+            from <b>{over_cat}</b> (reduce by {over_excess_pct:.2f}%) to <b>{best_under_cat}</b> (raise by {under_shortage_pct:.2f}%).
             </div>
             """
 
-    # Display
+    # Display suggestions
     for s in suggestions:
         st.markdown(s, unsafe_allow_html=True)
 
@@ -437,8 +463,11 @@ else:
         st.markdown("#### 🔄 Allocation Shifting Recommendations")
         st.markdown(shift_box, unsafe_allow_html=True)
     else:
-        st.markdown("""
+        st.markdown(
+            """
         <div style='background:#ddffdd;padding:10px;border-left:5px solid green;margin-top:8px;'>
         ✅ No shifting required. All category allocations are balanced.
         </div>
-        """, unsafe_allow_html=True)
+        """,
+            unsafe_allow_html=True,
+        )
