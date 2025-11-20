@@ -304,16 +304,7 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table, use_container_width=True)
 
-    top = alloc_table.head(10)
-    fig, ax = plt.subplots(figsize=(6, 3))
-    ax.bar(top["Scheme"], top["Allocation (%)"])
-    ax.set_xticklabels(top["Scheme"], rotation=45, ha="right")
-    ax.set_ylabel("Allocation (%)")
-    ax.set_title("Top 10 Schemes by Allocation")
-    fig.tight_layout()
-    st.pyplot(fig)
-
-
+   
 # ------------------------------------------------------
 # 5. Suggestion Box (NEW SECTION)
 # ------------------------------------------------------
