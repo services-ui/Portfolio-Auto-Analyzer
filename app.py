@@ -69,14 +69,14 @@ def extract_table(df_raw):
         first_cell = str(df_raw.iat[idx, 0]).strip().upper()
         if first_cell in ("SCHEME NAME", "SCHEME"):
             header = df_raw.iloc[idx]
-            table = df_raw.iloc[idx + 1 :].copy()
+            table = df_raw.iloc[idx + 1:].copy()
             table.columns = header
             table = table.dropna(how="all")
             return table, idx
 
     first_non_empty = df_raw.dropna(how="all").index[0]
     header = df_raw.iloc[first_non_empty]
-    table = df_raw.iloc[first_non_empty + 1 :].copy()
+    table = df_raw.iloc[first_non_empty + 1:].copy()
     table.columns = header
     table = table.dropna(how="all")
     return table, first_non_empty
@@ -202,6 +202,34 @@ if not used_section_style:
 
 
 # ------------------------------------------------------
+# ⭐ NEW: NORMALIZE SUB-CATEGORIES FOR ACCURATE SUGGESTIONS
+# ------------------------------------------------------
+
+normalize_map = {
+    "smallcap": "Small Cap",
+    "small cap": "Small Cap",
+
+    "midcap": "Mid Cap",
+    "mid cap": "Mid Cap",
+
+    "largecap": "Large Cap",
+    "large cap": "Large Cap",
+
+    "flexicap": "Flexi Cap",
+    "flexi cap": "Flexi Cap",
+}
+
+def normalize_subcat(x):
+    s = str(x).lower().strip()
+    for key, val in normalize_map.items():
+        if key in s:
+            return val
+    return x  # fallback
+
+df_no_total["SubCategory"] = df_no_total["SubCategory"].apply(normalize_subcat)
+
+
+# ------------------------------------------------------
 # 1. Summary
 # ------------------------------------------------------
 st.markdown("### 1️⃣ Portfolio Summary")
@@ -304,9 +332,9 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table, use_container_width=True)
 
-   
+
 # ------------------------------------------------------
-# 5. Suggestion Box (NEW SECTION)
+# 5. Suggestion Box (FIXED)
 # ------------------------------------------------------
 st.markdown("### 5️⃣ Suggestion Box")
 
@@ -344,7 +372,7 @@ else:
             under_list[cat] = (low, high, actual, value, low, total_current_value * low / 100)
             continue
 
-        # Correct range
+        # In Range
         if low <= actual <= high:
             msg = f"""
             <div style='background:#ddffdd;padding:10px;border-left:5px solid green;margin-bottom:8px;'>
@@ -353,28 +381,26 @@ else:
             """
             suggestions.append(msg)
 
-        # Over-allocated
+        # Over
         elif actual > high:
             excess_pct = actual - high
             excess_amount = total_current_value * excess_pct / 100
             msg = f"""
             <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
             🔴 <b>{cat}</b> allocation is high ({actual:.2f}% > {high}%).<br>
-            Ideal: <b>{low}% – {high}%</b><br>
             Excess Amount: <b>₹{excess_amount:,.0f}</b>
             </div>
             """
             suggestions.append(msg)
             over_list[cat] = (low, high, actual, value, excess_pct, excess_amount)
 
-        # Under-allocated
+        # Under
         else:
             shortage_pct = low - actual
             shortage_amount = total_current_value * shortage_pct / 100
             msg = f"""
             <div style='background:#ffdddd;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
             🔴 <b>{cat}</b> allocation is low ({actual:.2f}% < {low}%).<br>
-            Ideal: <b>{low}% – {high}%</b><br>
             Shortage Amount: <b>₹{shortage_amount:,.0f}</b>
             </div>
             """
