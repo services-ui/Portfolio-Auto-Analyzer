@@ -248,32 +248,25 @@ df_no_total["SubCategory"] = df_no_total["SubCategory"].apply(normalize_subcat)
 # ------------------------------------------------------
 st.markdown("### 1️⃣ Portfolio Summary")
 
-# ---------------------------------------------
-# Extract ABSOLUTE RETURN (%) from GRAND TOTAL row
-# ---------------------------------------------
-grand_total_abs_return = None
+# ---- Get GRAND TOTAL CAGR / XIRR from original df (with TOTAL rows) ----
+grand_total_cagr = None
 
-if abs_ret_col:
+if cagr_col:
     for i in range(df.shape[0]):
         row_text = " ".join([str(x) for x in df.iloc[i]])
-        if "TOTAL" in row_text.upper():  # catches GRAND TOTAL, TOTAL, etc.
+        if "TOTAL" in row_text.upper():   # catches TOTAL / GRAND TOTAL etc.
             try:
-                val = str(df.iloc[i][abs_ret_col]).replace("%", "").replace(",", "")
-                grand_total_abs_return = float(val)
+                val = str(df.iloc[i][cagr_col]).replace("%", "").replace(",", "")
+                grand_total_cagr = float(val)
             except:
-                grand_total_abs_return = None
+                grand_total_cagr = None
             break
 
-# Values after removing totals
+# ---- Use df_no_total for value sums ----
 total_purchase = df_no_total[purchase_col].sum() if purchase_col else 0.0
 total_current = df_no_total[current_col].sum() if current_col else 0.0
 total_gain = total_current - total_purchase
 
-avg_cagr = df_no_total[cagr_col].mean() if cagr_col else None
-
-# ---------------------------------------------
-# Display Metrics
-# ---------------------------------------------
 c1, c2, c3 = st.columns(3)
 c1.metric("Client", client_name)
 c2.metric("Purchase (₹)", f"{total_purchase:,.0f}")
@@ -282,13 +275,11 @@ c3.metric("Current (₹)", f"{total_current:,.0f}")
 c4, c5 = st.columns(2)
 c4.metric("Gain / Loss (₹)", f"{total_gain:,.0f}")
 
-# Show ABSOLUTE RETURN (%) from GRAND TOTAL only
-if grand_total_abs_return is not None:
-    c5.metric("Abs Return (%)", f"{grand_total_abs_return:.2f}")
-elif avg_cagr is not None:
-    c5.metric("Avg. CAGR / XIRR (%)", f"{avg_cagr:.2f}")
+# 👉 Only show CAGR / XIRR from GRAND TOTAL
+if grand_total_cagr is not None:
+    c5.metric("CAGR / XIRR (%)", f"{grand_total_cagr:.2f}")
 else:
-    c5.metric("Abs Return (%)", "N/A")
+    c5.metric("CAGR / XIRR (%)", "N/A")
 
 with st.expander("Scheme-level table", expanded=False):
     st.dataframe(df_no_total.reset_index(drop=True))
