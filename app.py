@@ -244,29 +244,30 @@ def normalize_subcat(x):
 df_no_total["SubCategory"] = df_no_total["SubCategory"].apply(normalize_subcat)
 
 # ------------------------------------------------------
-# 1. Summary
+# 1. Summary (Corrected CAGR from Grand Total)
 # ------------------------------------------------------
 st.markdown("### 1️⃣ Portfolio Summary")
 
-# ---- Get GRAND TOTAL CAGR / XIRR from original df (with TOTAL rows) ----
+# ---- Extract GRAND TOTAL CAGR from original df (not df_no_total) ----
 grand_total_cagr = None
 
 if cagr_col:
-    for i in range(df.shape[0]):
-        row_text = " ".join([str(x) for x in df.iloc[i]])
-        if "TOTAL" in row_text.upper():   # catches TOTAL / GRAND TOTAL etc.
-            try:
-                val = str(df.iloc[i][cagr_col]).replace("%", "").replace(",", "")
-                grand_total_cagr = float(val)
-            except:
-                grand_total_cagr = None
-            break
+    try:
+        # Find row where first column contains "Grand Total"
+        mask = df.iloc[:, 0].astype(str).str.contains("Grand Total", case=False, na=False)
+        if mask.any():
+            row = df[mask].iloc[0]
+            raw_value = str(row[cagr_col]).replace("%", "").replace(",", "").strip()
+            grand_total_cagr = float(raw_value)
+    except:
+        grand_total_cagr = None
 
-# ---- Use df_no_total for value sums ----
+# ---- Calculate values using df_no_total ----
 total_purchase = df_no_total[purchase_col].sum() if purchase_col else 0.0
 total_current = df_no_total[current_col].sum() if current_col else 0.0
 total_gain = total_current - total_purchase
 
+# ---- Display metrics ----
 c1, c2, c3 = st.columns(3)
 c1.metric("Client", client_name)
 c2.metric("Purchase (₹)", f"{total_purchase:,.0f}")
@@ -275,7 +276,7 @@ c3.metric("Current (₹)", f"{total_current:,.0f}")
 c4, c5 = st.columns(2)
 c4.metric("Gain / Loss (₹)", f"{total_gain:,.0f}")
 
-# 👉 Only show CAGR / XIRR from GRAND TOTAL
+# 👉 Show ONLY the correct Grand Total CAGR
 if grand_total_cagr is not None:
     c5.metric("CAGR / XIRR (%)", f"{grand_total_cagr:.2f}")
 else:
