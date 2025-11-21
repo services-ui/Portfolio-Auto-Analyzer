@@ -501,3 +501,109 @@ else:
                 """,
                 unsafe_allow_html=True
             )
+# ------------------------------------------------------
+# 6. Sectorial / Thematic / ELSS Scheme Alerts
+# ------------------------------------------------------
+st.markdown("### 6️⃣ Sectorial / Thematic / ELSS Schemes")
+
+sector_keywords = [
+    "pharma", "healthcare", "banking", "financial", "psu",
+    "it", "technology", "tech", "infrastructure", "infra",
+    "consumption", "fmcg", "energy", "power", "defence",
+    "thematic", "theme", "sector", "commodity",
+    "elss", "tax saver", "taxsaver"
+]
+
+sector_warnings = []
+
+if scheme_col:
+    for scheme in df_no_total[scheme_col].astype(str):
+        s = scheme.lower()
+
+        for kw in sector_keywords:
+            if kw in s:
+                sector_warnings.append({
+                    "scheme": scheme,
+                    "keyword": kw
+                })
+                break  # avoid duplicate alerts for same scheme
+
+# Display Results
+if not sector_warnings:
+    st.markdown(
+        """
+        <div style='padding:10px;background:#e6ffe6;border-left:5px solid #00b300;'>
+        ✅ <b>No Sectorial / Thematic / ELSS schemes found.</b>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    st.markdown(
+        "<b>🚨 Sectorial / Thematic / ELSS Schemes Identified</b>",
+        unsafe_allow_html=True
+    )
+
+    for w in sector_warnings:
+        st.markdown(
+            f"""
+            <div style='background:#ffe6e6;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
+            🔴 <b>{w['scheme']}</b> — detected as <b>{w['keyword'].upper()}</b> category.<br>
+            Please verify allocation risk and suitability.
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+# ------------------------------------------------------
+# 6. Sectorial / Thematic / ELSS Scheme Alerts
+# ------------------------------------------------------
+st.markdown("### 6️⃣ Sectorial / Thematic / ELSS Schemes")
+
+sector_keywords = [
+    "pharma", "healthcare", "banking", "financial", "psu",
+    "it", "technology", "tech", "infrastructure", "infra",
+    "consumption", "fmcg", "energy", "power", "defence",
+    "thematic", "theme", "sector", "commodity",
+    "elss", "tax saver", "taxsaver"
+]
+
+sector_warnings = []
+
+if scheme_col:
+    for scheme in df_no_total[scheme_col].astype(str):
+        s = scheme.lower()
+
+        for kw in sector_keywords:
+            if kw in s:
+                sector_warnings.append({
+                    "scheme": scheme,
+                    "keyword": kw
+                })
+                break  # avoid duplicate alerts for same scheme
+
+# Display Results
+if not sector_warnings:
+    st.markdown(
+        """
+        <div style='padding:10px;background:#e6ffe6;border-left:5px solid #00b300;'>
+        ✅ <b>No Sectorial / Thematic / ELSS schemes found.</b>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+else:
+    st.markdown(
+        "<b>🚨 Sectorial / Thematic / ELSS Schemes Identified</b>",
+        unsafe_allow_html=True
+    )
+
+    for w in sector_warnings:
+        st.markdown(
+            f"""
+            <div style='background:#ffe6e6;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
+            🔴 <b>{w['scheme']}</b> — detected as <b>{w['keyword'].upper()}</b> category.<br>
+            Please verify allocation risk and suitability.
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
