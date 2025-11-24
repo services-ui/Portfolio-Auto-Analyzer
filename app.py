@@ -337,26 +337,36 @@ if current_col:
         ax.pie(sub_group_val.values, autopct="%1.1f%%")
         ax.set_title("Sub-category\nAllocation", fontsize=9)
         st.pyplot(fig)
-
-
 # ------------------------------------------------------
-# 4. Scheme Allocation
+# 4. Scheme Allocation (All schemes + merged duplicates)
 # ------------------------------------------------------
-st.markdown("### 4️⃣ Scheme Allocation (Top 10 by value)")
+st.markdown("### 4️⃣ Scheme Allocation (All Schemes)")
 
 if current_col and scheme_col:
+    # Extract scheme name + current value
     alloc = df_no_total[[scheme_col, current_col]].dropna()
-    alloc_group = alloc.groupby(scheme_col)[current_col].sum().sort_values(ascending=False)
+
+    # Group duplicate schemes by name
+    alloc_group = (
+        alloc.groupby(scheme_col)[current_col]
+        .sum()
+        .sort_values(ascending=False)
+    )
+
     total_current = df_no_total[current_col].sum()
+
+    # Calculate allocation %
     alloc_pct = (alloc_group / total_current * 100).round(2)
 
+    # Prepare final table
     alloc_table = pd.DataFrame({
         "Scheme": alloc_group.index,
-        "Current Value (₹)": alloc_group.values,
+        "Total Current Value (₹)": alloc_group.values,
         "Allocation (%)": alloc_pct.values,
     })
 
     st.dataframe(alloc_table, use_container_width=True)
+
 
 # ------------------------------------------------------
 # 5a. Allocation Analysis Table  (UPDATED)
