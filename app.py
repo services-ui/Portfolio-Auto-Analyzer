@@ -356,8 +356,9 @@ if current_col:
         ax.pie(sub_group_val.values, autopct="%1.1f%%")
         ax.set_title("Sub-category\nAllocation", fontsize=9)
         st.pyplot(fig)
+
 # ------------------------------------------------------
-# 4. Scheme Allocation (All schemes + merged duplicates)
+# 4. Scheme Allocation (All Schemes + Risk Score)
 # ------------------------------------------------------
 st.markdown("### 4️⃣ Scheme Allocation (All Schemes)")
 
@@ -377,14 +378,32 @@ if current_col and scheme_col:
     # Calculate allocation %
     alloc_pct = (alloc_group / total_current * 100).round(2)
 
-    # Prepare final table
-    alloc_table = pd.DataFrame({
-        "Scheme": alloc_group.index,
-        "Total Current Value (₹)": alloc_group.values,
-        "Allocation (%)": alloc_pct.values,
-    })
+    # Build table rows
+    rows = []
+    for scheme_name, value in alloc_group.items():
+        pct = alloc_pct[scheme_name]
+
+        # Risk logic
+        if pct > 10:
+            risk = "🟥 High Risk"
+        else:
+            risk = "🟩 Safe"
+
+        rows.append([scheme_name, value, pct, risk])
+
+    # Final table
+    alloc_table = pd.DataFrame(
+        rows,
+        columns=[
+            "Scheme",
+            "Total Current Value (₹)",
+            "Allocation (%)",
+            "Risk Score"
+        ]
+    )
 
     st.dataframe(alloc_table, use_container_width=True)
+
 
 # ------------------------------------------------------
 # 4a. AMC-wise Allocation (Table + Expanders)
