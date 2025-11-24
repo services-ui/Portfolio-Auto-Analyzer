@@ -633,77 +633,132 @@ else:
                 unsafe_allow_html=True
             )
 
+# ------------------------------------------------------
+# 6️⃣ Sector / Thematic / ELSS / Children Scheme Detection (Enhanced)
+# ------------------------------------------------------
+import re
 
-# ------------------------------------------------------
-# 6️⃣ Sector / Thematic / ELSS Scheme Detection (Corrected)
-# ------------------------------------------------------
 st.markdown("### 6️⃣ Sector / Thematic / ELSS Alerts")
 
-sector_patterns = {
-    "IT": r"\bit\b",
-    "Technology": r"\btechnology\b",
-    "Tech": r"\btech\b",
-    "Pharma": r"\bpharma\b",
-    "Banking / Financial": r"\b(banking|financial|finance)\b",
-    "Auto": r"\bauto\b",
-    "Infrastructure": r"\binfrastructure\b",
-    "Commodity": r"\bcommodit(y|ies)\b",
-}
+# --------------------------
+# Keyword Groups
+# --------------------------
 
-elss_pattern = r"\belss\b"
-thematic_pattern = r"\bthematic\b"
+# Children funds
+children_keywords = [
+    "child", "children", "childrens", "kid", "minor",
+    "education", "future fund", "gift fund", "career fund"
+]
+
+# ELSS
+elss_keywords = ["elss", "tax saver", "taxsaver"]
+
+# Thematic
+thematic_keywords = ["thematic", "theme", "opportunities"]
+
+# Sector groups
+sector_groups = {
+    "Infrastructure": [
+        "infra", "infr", "infrastr", "infrastructure", "infrastu", "infrastucture",
+        "construction", "transport"
+    ],
+    "Banking / Financial": [
+        "bank", "banking", "finance", "financial", "nbfc", "credit"
+    ],
+    "Technology": [
+        "tech", "technology", "software", "digital", "internet", "ai", "data"
+    ],
+    "IT": [" it "],  # safe match
+    "Pharma / Healthcare": [
+        "pharma", "health", "healthcare", "biotech", "diagnostic", "life science"
+    ],
+    "FMCG / Consumption": [
+        "consumer", "consumption", "fmcg", "retail", "food", "beverage"
+    ],
+    "Auto / EV": [
+        "auto", "automobile", "ev", "mobility"
+    ],
+    "Energy / Power / Oil": [
+        "energy", "power", "renewable", "solar", "wind",
+        "oil", "gas", "petro"
+    ],
+    "Commodities / Metals": [
+        "commodity", "commodities", "metal", "mining", "steel", "iron", "aluminium"
+    ],
+    "PSU": [
+        "psu", "maharatna", "navratna", "government"
+    ],
+    "Global / MNC": [
+        "mnc", "global", "international", "world"
+    ],
+    "Agriculture / Rural": [
+        "agri", "agriculture", "rural", "fertilizer", "crop", "seed"
+    ]
+}
 
 sector_warnings = []
 
+# --------------------------
+# Detection Loop
+# --------------------------
 if scheme_col:
     for scheme in df_no_total[scheme_col].astype(str):
-        s_lower = scheme.lower()
+        s = scheme.lower()
 
-        # ELSS
-        if re.search(elss_pattern, s_lower):
+        # ---- Children Detection (Highest Priority) ----
+        if any(k in s for k in children_keywords):
             sector_warnings.append(
-                f"🔴 <b>{scheme}</b> — detected as <b>ELSS (Tax Saver)</b> fund. Please verify suitability."
+                f"🔴 <b>{scheme}</b> — detected as <b>Children / Minor</b> fund. Please verify suitability."
             )
             continue
 
-        # Thematic
-        if re.search(thematic_pattern, s_lower):
+        # ---- ELSS ----
+        if any(k in s for k in elss_keywords):
             sector_warnings.append(
-                f"🔴 <b>{scheme}</b> — detected as <b>Thematic</b> fund. Please verify risk."
+                f"🔴 <b>{scheme}</b> — detected as <b>ELSS</b> fund. Please verify suitability."
             )
             continue
 
-        # Sector
-        for sector_name, pattern in sector_patterns.items():
-            if re.search(pattern, s_lower):
+        # ---- Thematic ----
+        if any(k in s for k in thematic_keywords):
+            sector_warnings.append(
+                f"🔴 <b>{scheme}</b> — detected as <b>Thematic</b> fund. Please verify suitability."
+            )
+            continue
+
+        # ---- Sector Detection ----
+        for sector_name, keywords in sector_groups.items():
+            if any(k in s for k in keywords):
                 sector_warnings.append(
-                    f"🔴 <b>{scheme}</b> — detected as <b>{sector_name}</b> sector fund."
+                    f"🔴 <b>{scheme}</b> — detected as <b>{sector_name}</b> sector fund. Please verify suitability."
                 )
                 break
 
+# --------------------------
+# Display Alerts
+# --------------------------
 if len(sector_warnings) == 0:
     st.markdown(
         """
         <div style='padding:10px;background:#e6ffe6;border-left:5px solid #00b300;'>
-        ✅ No Sectorial, Thematic or ELSS schemes detected.
+        ✅ No Sectorial, Thematic, ELSS or Children schemes detected.
         </div>
         """,
         unsafe_allow_html=True
     )
 else:
     st.markdown(
-        """
-        <div style='padding:10px;'><b>🚨 Sector / Thematic / ELSS Alerts</b></div>
-        """,
+        "<div style='padding:8px;'><b>🚨 Alerts Found</b></div>",
         unsafe_allow_html=True
     )
+
     for warn in sector_warnings:
         st.markdown(
             f"""
             <div style='background:#ffe6e6;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
-            {warn}<br>
-            Please verify allocation risk and suitability.
+            {warn}
             </div>
             """,
             unsafe_allow_html=True
         )
+
