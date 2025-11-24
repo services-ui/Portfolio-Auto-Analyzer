@@ -189,8 +189,27 @@ for col in [purchase_col, current_col, gain_col, abs_ret_col, cagr_col]:
             pass
 
 # remove TOTAL rows
-mask_total = df.apply(lambda r: any("TOTAL" in str(x).upper() for x in r), axis=1)
+import re
+
+def is_client_name_pattern(text):
+    """
+    Detects rows like: NAME (ABCDE1234F)
+    PAN format = 5 letters + 4 digits + 1 letter
+    """
+    text = str(text).strip()
+    pattern = r"\([A-Z]{5}[0-9]{4}[A-Z]\)"   # (ABCDE1234F)
+    return bool(re.search(pattern, text))
+
+mask_total = df.apply(
+    lambda r: (
+        any("TOTAL" in str(x).upper() for x in r) or 
+        is_client_name_pattern(r.iloc[0])  # Check first cell for client row
+    ),
+    axis=1
+)
+
 df_no_total = df[~mask_total].copy()
+
 
 # derive categories
 df_no_total, used_section_style = apply_section_subcategories(df_no_total, scheme_col)
