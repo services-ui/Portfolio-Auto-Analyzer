@@ -484,26 +484,88 @@ if scheme_col:
 else:
     st.info("AMC breakdown unavailable — Scheme column not detected.")
 
-
 # ------------------------------------------------------
-# 5a. Allocation Analysis Table  (UPDATED + Formatted)
+# 5️⃣a Allocation Analysis Table (UPDATED CATEGORY GROUPING)
 # ------------------------------------------------------
 st.markdown("### 5️⃣a Allocation Analysis Table")
 
-# Ideal ranges for allocation
+# ------------ NEW CATEGORY GROUPING RULES ------------
+def map_final_category(subcat):
+
+    s = str(subcat).lower().strip()
+
+    # --- LARGE CAP FAMILY ---
+    if any(k in s for k in [
+        "large cap", "large & mid", "large and mid", "l&m", "l and m", "lam cap",
+        "index"
+    ]):
+        return "Large Cap"
+
+    # --- MID CAP ---
+    if "mid cap" in s and "large" not in s:
+        return "Mid Cap"
+
+    # --- SMALL CAP ---
+    if "small cap" in s:
+        return "Small Cap"
+
+    # --- FLEXI CAP ---
+    if "flexi" in s:
+        return "Flexi Cap"
+
+    # --- MULTI ASSET ---
+    if any(k in s for k in ["multi asset", "multi-asset", "multiasset"]):
+        return "Multi Asset"
+
+    # --- HYBRID FAMILY ---
+    if any(k in s for k in [
+        "hybrid", "balanced", "conservative", "equity savings",
+        "dynamic asset", "balanced advantage", "daa"
+    ]):
+        return "Hybrid"
+
+    # --- LIQUID / DEBT FAMILY ---
+    if any(k in s for k in [
+        "liquid", "overnight", "money market", "arbitrage",
+        "ultra short", "low duration", "short duration",
+        "corporate bond", "credit risk", "dynamic bond", "bond",
+        "gilt", "psu", "floater", "all seasons", "dynamic income",
+        "banking & psu"
+    ]):
+        return "Liquid"
+
+    # --- VALUE FUND ---
+    if "value" in s:
+        return "Value Fund"
+
+    # --- FOCUSED FUND ---
+    if "focused" in s:
+        return "Focused Fund"
+
+    return "Other"
+
+
+df_no_total["FinalCategory"] = df_no_total["SubCategory"].apply(map_final_category)
+
+# -------------- IDEAL RANGES (EDIT LATER) ----------------
 ideal_ranges = {
     "Large Cap": (30, 50),
     "Mid Cap": (25, 30),
     "Small Cap": (25, 30),
     "Flexi Cap": (30, 50),
 
-    # NEW RULES (Max-only rules)
+    # You will confirm later:
+    "Multi Asset": (0, 100),
+    "Hybrid": (0, 100),
+    "Liquid": (0, 100),
+
+    # Existing
     "Value Fund": (0, 10),
     "Focused Fund": (0, 10),
 }
 
-# Calculate actual % by sub-category
-sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
+# ------------ CALCULATIONS ------------
+sub_group_val = df_no_total.groupby("FinalCategory")[current_col].sum()
 total_current_value = df_no_total[current_col].sum()
 actual_pct_series = (sub_group_val / total_current_value * 100).round(2)
 
@@ -511,10 +573,10 @@ rows = []
 
 for cat, (low, high) in ideal_ranges.items():
 
-    actual_val = float(sub_group_val.get(cat, 0.0))
-    actual_pct = float(actual_pct_series.get(cat, 0.0))
+    actual_val = float(sub_group_val.get(cat, 0))
+    actual_pct = float(actual_pct_series.get(cat, 0))
 
-    # ---- CASE 1: Category not invested at all ----
+    # Category missing
     if actual_pct == 0 and low > 0:
         short_pct = low
         short_amt = total_current_value * short_pct / 100
@@ -527,18 +589,16 @@ for cat, (low, high) in ideal_ranges.items():
         ])
         continue
 
-    # ---- CASE 2: Within range ----
+    # Within ideal range
     if low <= actual_pct <= high:
         rows.append([
             cat, actual_val, actual_pct,
             f"{low}% - {high}%",
-            "OK",
-            0.0,
-            "No Action"
+            "OK", 0, "No Action"
         ])
         continue
 
-    # ---- CASE 3: Excess Allocation ----
+    # Excess allocation
     if actual_pct > high:
         excess_pct = actual_pct - high
         excess_amt = total_current_value * excess_pct / 100
@@ -551,7 +611,7 @@ for cat, (low, high) in ideal_ranges.items():
         ])
         continue
 
-    # ---- CASE 4: Short Allocation ----
+    # Short allocation
     if actual_pct < low:
         short_pct = low - actual_pct
         short_amt = total_current_value * short_pct / 100
@@ -563,7 +623,7 @@ for cat, (low, high) in ideal_ranges.items():
             "Increase Allocation"
         ])
 
-# Build dataframe
+# ------------ FINAL DATAFRAME ------------
 alloc_table_df = pd.DataFrame(
     rows,
     columns=[
@@ -571,10 +631,6 @@ alloc_table_df = pd.DataFrame(
         "Short / Excess %", "Short / Excess Amt (₹)", "Suggestion"
     ],
 )
-
-# Apply Indian formatting to value columns
-alloc_table_df["Actual Value (₹)"] = alloc_table_df["Actual Value (₹)"].apply(inr_format)
-alloc_table_df["Short / Excess Amt (₹)"] = alloc_table_df["Short / Excess Amt (₹)"].apply(inr_format)
 
 st.dataframe(alloc_table_df, use_container_width=True)
 
