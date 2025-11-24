@@ -487,95 +487,138 @@ else:
 
 
 # ------------------------------------------------------
-# 5a. Allocation Analysis Table  (UPDATED + Formatted)
+# 5️⃣a Allocation Analysis Table (UPDATED + Indian Format)
 # ------------------------------------------------------
 st.markdown("### 5️⃣a Allocation Analysis Table")
 
-# Ideal ranges for allocation
+# --- Indian currency formatter (WITH DECIMALS) ---
+def format_indian(x):
+    x = float(x)
+    s, *d = f"{x:.2f}".split(".")
+    r = ""
+    if len(s) > 3:
+        r = "," + ",".join([s[-3-i:-i or None] for i in range(3, len(s), 2)])
+        s = s[:-(len(r)-1)]
+    return f"₹{s}{r}.{d[0]}"
+
+# ------------------------------------------------------
+# CATEGORY NORMALIZATION LOGIC
+# ------------------------------------------------------
+def normalize_category(subcat):
+    s = str(subcat).lower()
+
+    # Large Cap group
+    if any(word in s for word in [
+        "large cap", "large & mid", "large and mid", "l&m", "l & m", "large/mid", "index"
+    ]):
+        return "Large Cap"
+
+    # Mid Cap
+    if "mid cap" in s:
+        return "Mid Cap"
+
+    # Small Cap
+    if "small cap" in s:
+        return "Small Cap"
+
+    # Flexi Cap
+    if "flexi" in s:
+        return "Flexi Cap"
+
+    # Multi Asset
+    if any(word in s for word in ["multi asset", "multi-asset", "multiasset", "multi asset allocation"]):
+        return "Multi Asset"
+
+    # Hybrid (merged hybrid family)
+    if any(word in s for word in [
+        "hybrid", "balanced", "conservative", "dynamic asset", "equity savings",
+        "balanced advantage", "dynamic allocation"
+    ]):
+        return "Hybrid"
+
+    # Liquid (expanded debt/liquid family)
+    if any(word in s for word in [
+        "liquid", "overnight", "money market", "arbitrage", "ultra short", "low duration",
+        "short duration", "corporate bond", "credit risk", "dynamic bond", "gilt",
+        "psu", "banking & psu", "floater", "all seasons", "dynamic income"
+    ]):
+        return "Liquid"
+
+    # Value Fund
+    if "value" in s:
+        return "Value Fund"
+
+    # Focused Fund
+    if "focused" in s:
+        return "Focused Fund"
+
+    return "Other"
+
+
+df_no_total["NormCategory"] = df_no_total["SubCategory"].apply(normalize_category)
+
+# ------------------------------------------------------
+# Ideal Ranges (You will update later)
+# ------------------------------------------------------
 ideal_ranges = {
     "Large Cap": (30, 50),
     "Mid Cap": (25, 30),
     "Small Cap": (25, 30),
     "Flexi Cap": (30, 50),
-
-    # NEW RULES (Max-only rules)
+    "Multi Asset": (5, 20),
+    "Hybrid": (5, 20),
+    "Liquid": (0, 20),
     "Value Fund": (0, 10),
     "Focused Fund": (0, 10),
 }
 
-# Calculate actual % by sub-category
-sub_group_val = df_no_total.groupby("SubCategory")[current_col].sum()
-total_current_value = df_no_total[current_col].sum()
-actual_pct_series = (sub_group_val / total_current_value * 100).round(2)
+# ------------------------------------------------------
+# Build Table
+# ------------------------------------------------------
+group_val = df_no_total.groupby("NormCategory")[current_col].sum()
+total_current_val = df_no_total[current_col].sum()
+actual_pct = (group_val / total_current_val * 100).round(2)
 
 rows = []
 
 for cat, (low, high) in ideal_ranges.items():
 
-    actual_val = float(sub_group_val.get(cat, 0.0))
-    actual_pct = float(actual_pct_series.get(cat, 0.0))
+    actual_val = float(group_val.get(cat, 0.0))
+    actual_p = float(actual_pct.get(cat, 0.0))
 
-    # ---- CASE 1: Category not invested at all ----
-    if actual_pct == 0 and low > 0:
+    if actual_p == 0 and low > 0:
         short_pct = low
-        short_amt = total_current_value * short_pct / 100
-        rows.append([
-            cat, actual_val, actual_pct,
-            f"{low}% - {high}%",
-            f"Short {short_pct:.2f}%",
-            short_amt,
-            "Increase Allocation"
-        ])
+        short_amt = total_current_val * short_pct / 100
+        rows.append([cat, format_indian(actual_val), actual_p,
+                     f"{low}% - {high}%", f"Short {short_pct:.2f}%",
+                     format_indian(short_amt), "Increase Allocation"])
         continue
 
-    # ---- CASE 2: Within range ----
-    if low <= actual_pct <= high:
-        rows.append([
-            cat, actual_val, actual_pct,
-            f"{low}% - {high}%",
-            "OK",
-            0.0,
-            "No Action"
-        ])
+    if low <= actual_p <= high:
+        rows.append([cat, format_indian(actual_val), actual_p,
+                     f"{low}% - {high}%", "OK", "₹0.00", "No Action"])
         continue
 
-    # ---- CASE 3: Excess Allocation ----
-    if actual_pct > high:
-        excess_pct = actual_pct - high
-        excess_amt = total_current_value * excess_pct / 100
-        rows.append([
-            cat, actual_val, actual_pct,
-            f"{low}% - {high}%",
-            f"Excess {excess_pct:.2f}%",
-            excess_amt,
-            "Reduce Allocation"
-        ])
+    if actual_p > high:
+        excess_pct = actual_p - high
+        excess_amt = total_current_val * excess_pct / 100
+        rows.append([cat, format_indian(actual_val), actual_p,
+                     f"{low}% - {high}%", f"Excess {excess_pct:.2f}%",
+                     format_indian(excess_amt), "Reduce Allocation"])
         continue
 
-    # ---- CASE 4: Short Allocation ----
-    if actual_pct < low:
-        short_pct = low - actual_pct
-        short_amt = total_current_value * short_pct / 100
-        rows.append([
-            cat, actual_val, actual_pct,
-            f"{low}% - {high}%",
-            f"Short {short_pct:.2f}%",
-            short_amt,
-            "Increase Allocation"
-        ])
+    if actual_p < low:
+        short_pct = low - actual_p
+        short_amt = total_current_val * short_pct / 100
+        rows.append([cat, format_indian(actual_val), actual_p,
+                     f"{low}% - {high}%", f"Short {short_pct:.2f}%",
+                     format_indian(short_amt), "Increase Allocation"])
 
-# Build dataframe
-alloc_table_df = pd.DataFrame(
-    rows,
+alloc_table_df = pd.DataFrame(rows,
     columns=[
         "Category", "Actual Value (₹)", "Actual %", "Ideal Range",
         "Short / Excess %", "Short / Excess Amt (₹)", "Suggestion"
-    ],
-)
-
-# Apply Indian formatting to value columns
-alloc_table_df["Actual Value (₹)"] = alloc_table_df["Actual Value (₹)"].apply(inr_format)
-alloc_table_df["Short / Excess Amt (₹)"] = alloc_table_df["Short / Excess Amt (₹)"].apply(inr_format)
+    ])
 
 st.dataframe(alloc_table_df, use_container_width=True)
 
