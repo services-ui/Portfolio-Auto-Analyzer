@@ -513,17 +513,26 @@ else:
                 unsafe_allow_html=True
             )
 # ------------------------------------------------------
-# 6. Sectorial / Thematic / ELSS Scheme Alerts
+# 6️⃣ Sector / Thematic / ELSS Scheme Detection (Corrected)
 # ------------------------------------------------------
-st.markdown("### 6️⃣ Sectorial / Thematic / ELSS Schemes")
+import re
 
-sector_keywords = [
-    "pharma", "healthcare", "banking", "financial", "psu",
-    "it", "technology", "tech", "infrastructure", "infra",
-    "consumption", "fmcg", "energy", "power", "defence",
-    "thematic", "theme", "sector", "commodity",
-    "elss", "tax saver", "taxsaver"
-]
+st.markdown("### 6️⃣ Sector / Thematic / ELSS Alerts")
+
+sector_patterns = {
+    "IT": r"\bit\b",
+    "Technology": r"\btechnology\b",
+    "Tech": r"\btech\b",
+    "Pharma": r"\bpharma\b",
+    "Banking / Financial": r"\b(banking|financial|finance)\b",
+    "Auto": r"\bauto\b",
+    "Infrastructure": r"\binfrastructure\b",
+    "Commodity": r"\bcommodit(y|ies)\b",
+}
+
+elss_pattern = r"\belss\b"
+thematic_pattern = r"\bthematic\b"
+sector_keywords = list(sector_patterns.keys())
 
 sector_warnings = []
 
@@ -531,35 +540,51 @@ if scheme_col:
     for scheme in df_no_total[scheme_col].astype(str):
         s = scheme.lower()
 
-        for kw in sector_keywords:
-            if kw in s:
-                sector_warnings.append({
-                    "scheme": scheme,
-                    "keyword": kw
-                })
-                break  # avoid duplicate alerts for same scheme
+        # --- ELSS detection ---
+        if re.search(elss_pattern, s):
+            sector_warnings.append(
+                f"🔴 <b>{scheme}</b> — detected as <b>ELSS (Tax Saver)</b> fund. Please verify suitability."
+            )
+            continue
 
-# Display Results
-if not sector_warnings:
+        # --- Thematic detection ---
+        if re.search(thematic_pattern, s):
+            sector_warnings.append(
+                f"🔴 <b>{scheme}</b> — detected as <b>Thematic</b> fund. Please verify risk."
+            )
+            continue
+
+        # --- Sector detection (SAFE: avoids “it” false trigger) ---
+        for sector_name, pattern in sector_patterns.items():
+            if re.search(pattern, s):
+                sector_warnings.append(
+                    f"🔴 <b>{scheme}</b> — detected as <b>{sector_name}</b> sector fund."
+                )
+                break
+
+# Display results
+if len(sector_warnings) == 0:
     st.markdown(
         """
         <div style='padding:10px;background:#e6ffe6;border-left:5px solid #00b300;'>
-        ✅ <b>No Sectorial / Thematic / ELSS schemes found.</b>
+        ✅ No Sectorial, Thematic or ELSS schemes detected.
         </div>
         """,
         unsafe_allow_html=True
     )
 else:
     st.markdown(
-        "<b>🚨 Sectorial / Thematic / ELSS Schemes Identified</b>",
+        """
+        <div style='padding:10px;'><b>🚨 Sector / Thematic / ELSS Alerts</b></div>
+        """,
         unsafe_allow_html=True
     )
 
-    for w in sector_warnings:
+    for warn in sector_warnings:
         st.markdown(
             f"""
             <div style='background:#ffe6e6;padding:10px;border-left:5px solid red;margin-bottom:8px;'>
-            🔴 <b>{w['scheme']}</b> — detected as <b>{w['keyword'].upper()}</b> category.<br>
+            {warn}<br>
             Please verify allocation risk and suitability.
             </div>
             """,
