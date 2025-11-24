@@ -367,6 +367,74 @@ if current_col and scheme_col:
 
     st.dataframe(alloc_table, use_container_width=True)
 
+# ------------------------------------------------------
+# 4a. AMC-wise Allocation (Table + Expanders)
+# ------------------------------------------------------
+st.markdown("### 4️⃣a AMC-wise Allocation")
+
+if scheme_col:
+
+    # Extract AMC name from scheme (first word before first space)
+    def get_amc_name(s):
+        return str(s).split()[0].strip()
+
+    df_no_total["AMC"] = df_no_total[scheme_col].astype(str).apply(get_amc_name)
+
+    amc_group_val = df_no_total.groupby("AMC")[current_col].sum()
+    total_current_val = df_no_total[current_col].sum()
+
+    amc_pct = (amc_group_val / total_current_val * 100).round(2)
+
+    # Prepare rows for table
+    amc_rows = []
+    amc_scheme_map = {}
+
+    for amc in amc_group_val.index:
+
+        value = amc_group_val[amc]
+        pct = amc_pct[amc]
+
+        # Risk Scoring
+        if pct < 20:
+            risk = "🟩 Low Risk"
+        elif 20 <= pct <= 25:
+            risk = "🟧 Medium Risk"
+        else:
+            risk = "🟥 High Risk"
+
+        # Count schemes
+        schemes_df = df_no_total[df_no_total["AMC"] == amc]
+        scheme_count = schemes_df.shape[0]
+
+        # Store scheme list
+        amc_scheme_map[amc] = schemes_df[[scheme_col, current_col]]
+
+        amc_rows.append([amc, value, pct, risk, scheme_count])
+
+    # Build AMC Table
+    amc_table_df = pd.DataFrame(
+        amc_rows,
+        columns=[
+            "AMC", "Total Value (₹)", "Allocation %", "Risk Score", "Schemes Count"
+        ]
+    ).sort_values("Total Value (₹)", ascending=False)
+
+    st.dataframe(amc_table_df, use_container_width=True)
+
+    # Expanders for each AMC
+    st.markdown("### 🔽 AMC Schemes Breakdown")
+
+    for amc in amc_table_df["AMC"]:
+        with st.expander(f"{amc} — Schemes ({amc_table_df.loc[amc_table_df['AMC']==amc,'Schemes Count'].values[0]})"):
+            amc_df = amc_scheme_map[amc]
+            amc_df_display = amc_df.rename(
+                columns={scheme_col: "Scheme", current_col: "Current Value (₹)"}
+            )
+            st.dataframe(amc_df_display, use_container_width=True)
+
+else:
+    st.info("AMC breakdown unavailable — Scheme column not detected.")
+
 
 # ------------------------------------------------------
 # 5a. Allocation Analysis Table  (UPDATED)
