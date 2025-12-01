@@ -847,3 +847,198 @@ else:
             """,
             unsafe_allow_html=True
         )
+# ---------------------- 7️⃣ SIP Upload & Allocation (Auto-detect Category) ----------------------
+st.markdown("## 🔁 SIP Manager (Upload & Adjust Running SIPs)")
+
+sip_file = st.file_uploader(
+    "Upload SIP Excel (INVESTOR | SCHEME | FOLIO | <month columns>) - Table 1 will show raw upload",
+    type=["xlsx", "xls", "csv"],
+    key="sip_uploader2",
+)
+
+# optional sample file on disk (for quick testing)
+sample_sip_path = "/mnt/data/My SIP's-MEHUL KHANDELWAL-28-11-2025-11-53-25.xlsx"
+
+sip_df = None
+if sip_file is None:
+    col_samp = st.columns([0.7, 0.3])
+    with col_samp[1]:
+        if st.button("Load sample SIP (for testing)", key="load_sip_sample"):
+            try:
+                sip_df = pd.read_excel(sample_sip_path, sheet_name=0)
+                st.success("Sample SIP loaded.")
+            except Exception as e:
+                st.error(f"Could not load sample SIP: {e}")
+else:
+    try:
+        if str(sip_file.name).lower().endswith(".csv"):
+            sip_df = pd.read_csv(sip_file)
+        else:
+            sip_df = pd.read_excel(sip_file, sheet_name=0)
+    except Exception as e:
+        st.error(f"Could not read SIP file: {e}")
+        sip_df = None
+
+if sip_df is not None:
+    # Normalize header strings
+    sip_df.columns = [str(c).strip() for c in sip_df.columns]
+
+    # ---------- TABLE 1: Raw preview ----------
+    st.markdown("### Table 1 — Uploaded SIP sheet (raw preview)")
+    st.dataframe(sip_df.head(500), use_container_width=True)
+
+    # ---------- Identify core columns ----------
+    cols_lower = {c.lower(): c for c in sip_df.columns}
+    investor_col = cols_lower.get("investor") or cols_lower.get("investor name") or list(sip_df.columns)[0]
+    scheme_col   = cols_lower.get("scheme") or cols_lower.get("scheme name") or list(sip_df.columns)[1]
+    folio_col    = cols_lower.get("folio") or cols_lower.get("folio no") or None
+
+    # month columns are everything except investor/scheme/folio
+    month_cols = [c for c in sip_df.columns if c not in {investor_col, scheme_col, folio_col}]
+
+    # consolidate duplicates by Investor+Scheme+(Folio if present)
+    group_keys = [investor_col, scheme_col]
+    if folio_col:
+        group_keys.append(folio_col)
+
+    running_df = sip_df[group_keys + month_cols].groupby(group_keys, as_index=False).sum()
+
+    # ---------- Build rows for interactive Table 2 ----------
+    rows = []
+    for _, r in running_df.iterrows():
+        inv = r[investor_col]
+        sch = r[scheme_col]
+        fol = r[folio_col] if folio_col else ""
+        rows.append({"Investor": inv, "Scheme": sch, "Folio": fol, "RowKey": f"{inv}|{sch}|{fol}"})
+
+    # persist in session_state so inputs survive reruns
+    if "sip_rows" not in st.session_state or st.session_state.get("sip_rows") is None:
+        st.session_state.sip_rows = rows
+
+    # Allow reload if new file uploaded
+    if st.button("Reload SIP rows from uploaded sheet", key="sip_reload"):
+        st.session_state.sip_rows = rows
+        st.experimental_rerun()
+
+    st.markdown("**Table 2 — SIP Allocation Calculator**")
+    st.write("Columns: Investor | Category (auto) | Running SIP (enter) | Current Allocation % | Increase/Decrease (enter) | Revised Allocation %")
+
+    # Option to autofill Running SIP from last non-empty month (optional)
+    auto_fill = st.checkbox("Auto-fill Running SIP from last non-empty month column (optional)", value=False)
+
+    # interactive inputs per row
+    interactive = []
+    for i, r in enumerate(st.session_state.sip_rows):
+        inv = r["Investor"]
+        sch = r["Scheme"]
+        fol = r["Folio"]
+        key_base = r["RowKey"].replace(" ", "_")
+
+        # Determine Category using portfolio logic:
+        # If scheme looks like "Equity: Mid Cap" -> take main before ':'
+        # else use split_main_sub() or classify_from_scheme_name()
+        try:
+            if ":" in str(sch):
+                cat = str(sch).split(":", 1)[0].strip()
+            else:
+                main, sub = split_main_sub(sch)
+                cat = main if main and main != "Other" else classify_from_scheme_name(sch)
+        except Exception:
+            cat = classify_from_scheme_name(sch)
+
+        # normalize category (re-use your normalize_subcat)
+        try:
+            cat = normalize_subcat(cat)
+        except:
+            pass
+
+        # default running SIP value
+        default_current = 0.0
+        if auto_fill and month_cols:
+            match = running_df[
+                (running_df[investor_col] == inv) & (running_df[scheme_col] == sch)
+            ]
+            if folio_col:
+                match = match[match[folio_col] == fol]
+            if not match.empty:
+                # find last non-zero month from right to left
+                for mc in reversed(month_cols):
+                    try:
+                        v = float(match.iloc[0].get(mc, 0) or 0)
+                    except:
+                        v = 0.0
+                    if v not in (0.0, None):
+                        default_current = v
+                        break
+
+        # input widgets: compact horizontal layout
+        colA, colB, colC, colD = st.columns([3, 2, 2, 2])
+        with colA:
+            st.write(f"**{inv}** — {cat}")
+        with colB:
+            cur_key = f"running_sip__{key_base}"
+            cur_val = st.number_input(f"Running SIP {i}", min_value=0.0, max_value=10_000_000.0, value=float(default_current), step=100.0, key=cur_key, format="%f")
+        with colC:
+            delta_key = f"delta_sip__{key_base}"
+            delta_val = st.number_input(f"Δ SIP {i}", min_value=-10_000_000.0, max_value=10_000_000.0, value=0.0, step=100.0, key=delta_key, format="%f")
+        with colD:
+            revised = cur_val + delta_val
+            st.write(inr_format(revised))
+
+        interactive.append({
+            "Investor": inv,
+            "Category": cat,
+            "RunningSIP": float(cur_val),
+            "Delta": float(delta_val),
+            "RevisedSIP": float(revised),
+        })
+
+    # ---------- Compute allocations and show two clean tables ----------
+    if len(interactive) == 0:
+        st.info("No SIP rows found in uploaded sheet.")
+    else:
+        df_res = pd.DataFrame(interactive)
+        total_current = df_res["RunningSIP"].sum()
+        total_revised = df_res["RevisedSIP"].sum()
+
+        # Current Allocation %
+        if total_current > 0:
+            df_res["CurrentAlloc(%)"] = (df_res["RunningSIP"] / total_current * 100).round(4)
+        else:
+            df_res["CurrentAlloc(%)"] = 0.0
+
+        # Revised Allocation %
+        if total_revised > 0:
+            df_res["RevisedAlloc(%)"] = (df_res["RevisedSIP"] / total_revised * 100).round(4)
+        else:
+            df_res["RevisedAlloc(%)"] = 0.0
+
+        # Build display tables (no Folio)
+        display_current = df_res[["Investor", "Category", "RunningSIP", "CurrentAlloc(%)"]].copy()
+        display_current = display_current.rename(columns={
+            "RunningSIP": "Running SIP (₹)",
+            "CurrentAlloc(%)": "Current Allocation (%)"
+        })
+        display_revised = df_res[["Investor", "Category", "RevisedSIP", "RevisedAlloc(%)"]].copy()
+        display_revised = display_revised.rename(columns={
+            "RevisedSIP": "Revised SIP (₹)",
+            "RevisedAlloc(%)": "Revised Allocation (%)"
+        })
+
+        # Format values for UI using your inr_format
+        display_current["Running SIP (₹)"] = display_current["Running SIP (₹)"].map(lambda x: inr_format(x))
+        display_revised["Revised SIP (₹)"] = display_revised["Revised SIP (₹)"].map(lambda x: inr_format(x))
+        display_current["Current Allocation (%)"] = display_current["Current Allocation (%)"].map(lambda x: f"{x:.2f}%")
+        display_revised["Revised Allocation (%)"] = display_revised["Revised Allocation (%)"].map(lambda x: f"{x:.2f}%")
+
+        st.markdown("#### A — Current Running SIP & Allocation")
+        st.dataframe(display_current, use_container_width=True)
+
+        st.markdown("#### B — Revised SIP & Revised Allocation")
+        st.dataframe(display_revised, use_container_width=True)
+
+        # CSV download (numeric values)
+        csv_out = df_res.to_csv(index=False).encode("utf-8")
+        st.download_button("Download SIP Allocation Results (CSV)", csv_out, file_name="sip_allocation_results.csv", mime="text/csv")
+
+# ---------------------- End SIP Module ----------------------
