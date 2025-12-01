@@ -752,7 +752,7 @@ sector_groups = {
         "bank", "banking", "finance", "financial", "nbfc", "credit"
     ],
     "Technology": [
-        "tech", "technology", "software", "digital", "internet", "ai", "data"
+        "tech", "technology", "software", "digital", "Innovation", "internet", "ai", "data"
     ],
     "IT": [" it "],  # safe match
     "Pharma / Healthcare": [
